@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>City Crime Synth</title>
 <meta name="description" content="Synthetic control analysis of monthly city crime rates from the Real-Time Crime Index, run in the browser.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M1 12 5 7l3 3 6-7' fill='none' stroke='%232a78d6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Cpath d=%27M1 10.5 5 5.5l3 2 7-6.5V8L8 13.5 5 11.5 1 13.5z%27 fill=%27%239ec5f4%27/%3E%3Cpath d=%27M1 12 5 8.5l3 2.5 7-6.5%27 fill=%27none%27 stroke=%27%232a78d6%27 stroke-width=%272%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27/%3E%3C/svg%3E">
 <link rel="stylesheet" href="styles.css">
 <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@3.7.0/plotly.min.js" defer></script>
 <script src="app.js" defer></script>
@@ -18,7 +18,7 @@
       synthetic control built from other cities in the
       <a href="https://realtimecrimeindex.com/" target="_blank" rel="noopener">Real-Time Crime Index</a>.
       The model runs in your browser, in Python (via <a href="https://pyodide.org/" target="_blank" rel="noopener">Pyodide</a>),
-      using the lasso and conformal intervals from
+      using the lasso, conformal intervals and placebo tests from
       <a href="https://github.com/apwheele/SynthPower" target="_blank" rel="noopener">SynthPower</a>.</p>
   </div>
 </header>
@@ -28,7 +28,7 @@
     <fieldset id="examples-box">
       <legend>Examples</legend>
       <div class="btn-row example-buttons"></div>
-      <p class="hint">Fills in every setting below and runs the analysis.</p>
+      <p class="hint">Fills in every setting below. Press Run analysis to fit it.</p>
     </fieldset>
 
     <fieldset>
@@ -65,17 +65,15 @@
         <label><input type="radio" name="estimator" value="synth"><span>Classic synth</span></label>
       </div>
       <div id="penalty-box">
-        <span class="label">Lasso penalty</span>
-        <div class="seg" role="radiogroup" aria-label="Lasso penalty">
-          <label><input type="radio" name="penalty" value="cv"><span>Cross-validated</span></label>
-          <label><input type="radio" name="penalty" value="fixed"><span>Fixed</span></label>
-        </div>
-        <input id="alpha" type="number" min="0" step="any" aria-label="Fixed lasso penalty">
+        <label class="check"><input type="checkbox" id="fix-alpha">
+          <span>Set the lasso penalty (alpha) by hand. Unchecked, alpha is chosen by 5-fold cross-validation on the
+            pre-period.</span></label>
+        <input id="alpha" type="number" min="0" step="any" aria-label="Lasso penalty (alpha)">
       </div>
     </fieldset>
 
     <fieldset>
-      <legend>Conformal intervals</legend>
+      <legend>Intervals</legend>
       <div class="choices" role="radiogroup" aria-label="Interval method">
         <label><input type="radio" name="interval" value="rolling">
           <span><b>Rolling-origin forecasts</b>Errors from forecasting ahead within the pre-period. Kept correct
@@ -86,6 +84,9 @@
         <label><input type="radio" name="interval" value="block">
           <span><b>Jackknife, block sums</b>Leave-one-month-out errors, cumulative band from sums of consecutive
             errors.</span></label>
+        <label><input type="radio" name="interval" value="placebo">
+          <span><b>Placebo tests</b>Each placebo city is fit as if it had the intervention, with the other donors
+            as its donor pool; the bands come from the placebos' gaps, scaled by pre-period fit. Slower.</span></label>
       </div>
       <div class="row2">
         <div id="min-train-box"><label for="min_train">First training window (months)</label>
@@ -98,6 +99,11 @@
             <option value="0.99">99%</option>
           </select></div>
       </div>
+      <div id="placebo-box">
+        <label for="placebo_min_pop">Placebo cities: population at least</label>
+        <input id="placebo_min_pop" type="number" min="0" step="50000">
+      </div>
+      <p id="interval-hint" class="hint"></p>
     </fieldset>
 
     <fieldset>
@@ -111,8 +117,7 @@
       </div>
       <ul id="exclude-list" class="chips" aria-label="Cities left out of the donor pool"></ul>
       <div class="btn-row">
-        <button type="button" id="guard-btn" class="btn">Add 2025 National Guard cities</button>
-        <button type="button" id="clear-btn" class="btn">Clear</button>
+        <button type="button" id="clear-btn" class="btn">Put them all back</button>
       </div>
     </fieldset>
 
@@ -133,22 +138,39 @@
 
     <section id="empty" class="card empty-state">
       <h2>No analysis yet</h2>
-      <p>Choose a treated city, an outcome, and the date the intervention started, then run the analysis. Or start
-        from an example:</p>
+      <p>Choose a treated city, an outcome, and the date the intervention started, then press Run analysis. Or fill
+        in an example:</p>
       <ul id="example-list" class="example-list"></ul>
     </section>
 
     <section id="results" class="results" hidden>
-      <h2 id="result-title"></h2>
-      <p id="result-sub" class="sub"></p>
+      <div class="print-only report-head">
+        <p>Synthetic control report &middot; printed <span id="report-time"></span></p>
+      </div>
+      <div class="results-head">
+        <div>
+          <h2 id="result-title"></h2>
+          <p id="result-sub" class="sub"></p>
+        </div>
+        <button type="button" class="btn" id="print-btn">Print report</button>
+      </div>
       <div class="tiles" id="tiles"></div>
       <p id="result-note" class="note"></p>
+
+      <details class="card settings-card">
+        <summary>Settings and data for this analysis</summary>
+        <p class="sub">Everything needed to rerun this analysis. Results can change when the Real-Time Crime Index
+          data are updated, so the data version is recorded too.</p>
+        <div class="table-wrap"><table id="settings-table" class="kv"></table></div>
+      </details>
 
       <article class="card">
         <header><h3>Observed and synthetic</h3>
           <p class="sub">Monthly rate per 100,000. The model is fit to the months before the line; the shaded band
-            is the conformal interval for the synthetic prediction.</p></header>
+            is the interval for the synthetic prediction, from the method chosen under Intervals.</p></header>
+        <img id="img-fit" class="print-img" alt="Observed and synthetic monthly rates">
         <div id="chart-fit" class="chart"></div>
+        <p class="band-note" hidden></p>
       </article>
 
       <div class="grid2">
@@ -159,12 +181,16 @@
               <label><input type="radio" name="monthly-view" value="dif" checked><span>Difference</span></label>
               <label><input type="radio" name="monthly-view" value="levels"><span>Levels</span></label>
             </div></header>
+          <img id="img-monthly" class="print-img" alt="Monthly effect with intervals">
           <div id="chart-monthly" class="chart"></div>
+          <p class="band-note" hidden></p>
         </article>
         <article class="card">
           <header><h3>Cumulative effect</h3>
             <p class="sub">Sum of the monthly differences since the intervention.</p></header>
+          <img id="img-cum" class="print-img" alt="Cumulative effect with band">
           <div id="chart-cum" class="chart"></div>
+          <p class="band-note" hidden></p>
         </article>
       </div>
 
@@ -181,6 +207,7 @@
               <label><input type="radio" name="donor-scale" value="log"><span>Log</span></label>
             </div>
           </div></header>
+        <img id="img-donors" class="print-img" alt="Donor city trajectories">
         <div id="chart-donors" class="chart tall"></div>
       </article>
 
@@ -219,7 +246,14 @@
           band either simulates independent draws of the errors (Wheeler 2023) or uses sums of consecutive errors.</p>
         <p>In <a href="https://github.com/apwheele/SynthPower" target="_blank" rel="noopener">SynthPower</a>, cumulative
           jackknife bands had far too many false positives beyond the first post-period year, including in monthly RTCI
-          city data, while rolling-origin bands kept their coverage in simulated and real state data. Implied crimes are the cumulative rate difference
+          city data, while rolling-origin bands kept their coverage in simulated and real state data.
+          <b>Placebo tests</b>: each donor city at or above the placebo population cutoff is fit as if it were treated,
+          with every other donor (never the treated city) as its donor pool and, for the cross-validated lasso, its own
+          penalty. The cumulative band is the treated city's pre-period RMSPE times the conformal quantile of the
+          placebos' cumulative gaps divided by their own pre-period RMSPE; monthly intervals use each month's gap the
+          same way. The band excludes zero exactly when the placebo test on the cumulative gap rejects. SynthPower found
+          an all-city placebo pool over-rejects for a large city like Los Angeles, and restricting it to cities of
+          250,000 or more fixed that. Implied crimes are the cumulative rate difference
           times the city's population divided by 100,000.</p>
       </details>
     </section>

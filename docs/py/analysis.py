@@ -42,6 +42,7 @@ INTERVALS = {
     "rolling": "Rolling-origin forecast errors",
     "jackknife": "Jackknife, independent cumulative draws",
     "block": "Jackknife, block sums",
+    "placebo": "Placebo tests",
 }
 
 # Model settings when a config leaves them out. The city, outcome and start
@@ -61,6 +62,7 @@ DEFAULTS = {
     "level": 0.95,
     "min_pop": 0,  # smallest donor population
     "exclude": [],  # donor cities to leave out, by agency ID
+    "placebo_min_pop": 250_000,  # smallest population of a placebo city
     "cumsim": 1000,  # simulations for the independent-draws cumulative band
     "seed": 10,
 }
@@ -162,9 +164,8 @@ def _clean(x):
     return x
 
 
-def run(panel, config=None, progress=None):
-    """Fit one analysis. ``config`` overrides ``DEFAULTS``; returns a dict."""
-    say = progress or (lambda msg: None)
+def _setup(panel, config, say, timing):
+    """Validate a config, pick the donors, and fit (or reuse) the model."""
     cfg = {**DEFAULTS, **(config or {})}
     for k, what in [("city", "a treated city"), ("crime", "an outcome"), ("start", "the intervention start date")]:
         if not cfg[k]:
@@ -180,12 +181,8 @@ def run(panel, config=None, progress=None):
     level = float(cfg["level"])
     if not 0.5 <= level < 1:
         raise AnalysisError("The interval level must be between 50% and 99.9%.")
-    a = 1 - level
-    timing = {}
-    t_start = time.perf_counter()
 
     window, T0, partial, first_post = resolve_periods(panel.dates, cfg)
-    H = len(window) - T0
     cols = np.array([panel.dates.index(d) for d in window])
     R = panel.rates(cfg["crime"])[:, cols]
     tr = panel.index[cfg["city"]]
@@ -217,11 +214,74 @@ def run(panel, config=None, progress=None):
         fitter, alpha = _fitter(cfg, X[:T0], y[:T0])
         fit = fitter(X[:T0], y[:T0])
         timing["fit"] = time.perf_counter() - t
-        ent = {"fitter": fitter, "alpha": alpha, "fit": fit, "rolling": {}}
+        ent = {"fitter": fitter, "alpha": alpha, "fit": fit, "rolling": {}, "placebo": {}}
         panel._cache[key] = ent
         while len(panel._cache) > MAX_CACHE:
             panel._cache.pop(next(iter(panel._cache)))
+    return cfg, dict(window=window, T0=T0, partial=partial, first_post=first_post, R=R, tr=tr, y=y,
+                     base=base, small=small, missing=missing, donors=donors, X=X, ent=ent)
+
+
+def _min_scores(a):
+    """Fewest scores whose finite-sample conformal quantile at level 1 - a is finite."""
+    n = 1
+    while np.ceil((1 - a) * (n + 1)) > n:
+        n += 1
+    return n
+
+
+def _placebo_pool(panel, cfg, donors):
+    """Positions in ``donors`` of the placebo cities: donors at or above the population cutoff."""
+    cut = float(cfg["placebo_min_pop"] or 0)
+    return [j for j in range(len(donors)) if panel.pop[donors[j]] >= cut]
+
+
+def _placebo_gap(cfg, X, j, T0):
+    """Gap for donor j treated as a placebo, with every other donor as its donor pool.
+
+    As in SynthPower's LassoSynth.placebos: each placebo gets its own
+    cross-validated penalty when the treated city's was cross-validated,
+    otherwise the same fixed penalty.
+    """
+    rest = np.delete(np.arange(X.shape[1]), j)
+    fitter, _ = _fitter(cfg, X[:T0, rest], X[:T0, j])
+    return m.gaps(fitter, X, j, rest, T0)
+
+
+def placebo_gaps(panel, config, units, progress=None):
+    """Placebo gaps for the donor cities ``units`` (agency IDs), as {id: list}.
+
+    The page splits the placebos across several Python workers with this
+    and passes the results back to ``run`` in ``config["placebo_gaps"]``.
+    """
+    say = progress or (lambda msg: None)
+    cfg, c = _setup(panel, config, lambda msg: None, {})
+    pos = {panel.ids[d]: j for j, d in enumerate(c["donors"])}
+    out = {}
+    for u in units:
+        out[u] = _placebo_gap(cfg, c["X"], pos[u], c["T0"]).tolist()
+        say("placebo")
+    return out
+
+
+def run(panel, config=None, progress=None):
+    """Fit one analysis. ``config`` overrides ``DEFAULTS``; returns a dict.
+
+    With ``interval="placebo"``, placebo gaps not in ``config["placebo_gaps"]``
+    are computed here, unless ``config["defer_placebos"]`` is true, in which
+    case the result is just ``{"need_placebos": [agency IDs]}``.
+    """
+    say = progress or (lambda msg: None)
+    timing = {}
+    t_start = time.perf_counter()
+    cfg, c = _setup(panel, config, say, timing)
+    window, T0, partial, first_post = c["window"], c["T0"], c["partial"], c["first_post"]
+    R, tr, y, donors, X, ent = c["R"], c["tr"], c["y"], c["donors"], c["X"], c["ent"]
+    base, small, missing = c["base"], c["small"], c["missing"]
+    H = len(window) - T0
+    a = 1 - float(cfg["level"])
     fitter, fit = ent["fitter"], ent["fit"]
+    placebo = None
 
     pred = fit.predict(X)
     gap = y - pred
@@ -230,7 +290,7 @@ def run(panel, config=None, progress=None):
     rmse = float(np.sqrt(np.mean(pre**2)))
     r2 = float(1 - np.sum(pre**2) / np.sum((y[:T0] - y[:T0].mean()) ** 2))
 
-    # Conformal intervals
+    # Intervals
     if cfg["interval"] in ("jackknife", "block"):
         if "jackknife" not in ent:
             say(f"Jackknife: refitting {T0} times, leaving out one pre-period month each time")
@@ -239,11 +299,48 @@ def run(panel, config=None, progress=None):
             timing["jackknife"] = time.perf_counter() - t
         r = ent["jackknife"]
         q = np.full(H, m.conformal_quantile(r, a))
+        n_ref = np.full(H, T0)
         if cfg["interval"] == "jackknife":
             cum, clo, chi = m.cum_band_iid(dif, r, a, nsim=int(cfg["cumsim"]), rng=int(cfg["seed"]))
         else:
             cum, clo, chi = m.cum_band_block(dif, r, a)
-        n_ref = np.full(H, T0)
+            # Block sums wrap around the pre-period, so for long horizons they overlap almost
+            # completely and the band shrinks. Only give a band when there are enough blocks
+            # of h consecutive errors that do not wrap (T0 - h + 1), the same count a
+            # conformal quantile needs.
+            n_ref = np.maximum(T0 - np.arange(H), 0)
+            short = n_ref < _min_scores(a)
+            clo, chi = np.where(short, np.nan, clo), np.where(short, np.nan, chi)
+    elif cfg["interval"] == "placebo":
+        pool = _placebo_pool(panel, cfg, donors)
+        if len(pool) < 2:
+            raise AnalysisError("Fewer than two placebo cities: lower the placebo population cutoff.")
+        cache = ent["placebo"]
+        for pid, g in (cfg.get("placebo_gaps") or {}).items():
+            if len(g) == len(window):
+                cache[pid] = np.asarray(g, dtype=float)
+        ids = [panel.ids[donors[j]] for j in pool]
+        need = [i for i in ids if i not in cache]
+        if need and cfg.get("defer_placebos"):
+            return {"need_placebos": need}
+        if need:
+            t = time.perf_counter()
+            pos = {panel.ids[d]: j for j, d in enumerate(donors)}
+            for k, pid in enumerate(need):
+                say(f"Placebo {k + 1} of {len(need)}")
+                cache[pid] = _placebo_gap(cfg, X, pos[pid], T0)
+            timing["placebo"] = time.perf_counter() - t
+        G = np.array([cache[i] for i in ids])
+        cum, clo, chi = m.placebo_band(gap, G, T0, a)
+        # Monthly intervals the same way as SynthPower's pointwise placebo test: each
+        # placebo's gap in month h over its pre-period RMSPE, the conformal quantile of
+        # those, times the treated city's pre-period RMSPE
+        scale = np.sqrt(np.mean(G[:, :T0] ** 2, axis=1))
+        q = np.array([m.conformal_quantile(G[:, T0 + h] / scale, a) for h in range(H)]) * rmse
+        n_ref = np.full(H, len(pool))
+        pv = m.placebo_pvalues(m.placebo_stats(gap, T0), [m.placebo_stats(g, T0) for g in G])
+        placebo = {"n": len(pool), "min_pop": float(cfg["placebo_min_pop"] or 0),
+                   "p_cum": pv["cum"], "p_ratio": pv["ratio"]}
     else:
         min_train = int(cfg["min_train"])
         if not 2 <= min_train < T0:
@@ -276,7 +373,7 @@ def run(panel, config=None, progress=None):
 
     timing["total"] = time.perf_counter() - t_start
     out = {
-        "config": cfg,
+        "config": {k: v for k, v in cfg.items() if k not in ("placebo_gaps", "defer_placebos")},
         "crime_label": CRIMES[cfg["crime"]][0],
         "estimator_label": ESTIMATORS[cfg["estimator"]],
         "interval_label": INTERVALS[cfg["interval"]],
@@ -321,6 +418,7 @@ def run(panel, config=None, progress=None):
             "count_hi": chi[-1] * pop / 1e5,
             "excludes_zero": bool(clo[-1] > 0 or chi[-1] < 0),
         },
+        "placebo": placebo,
         "weights": weights,
         "donors": {
             "ids": [panel.ids[i] for i in donors],
@@ -342,5 +440,13 @@ def run_json(panel, config_json, progress=None):
     """JSON in, JSON out, for the web worker. Errors come back as {"error": msg}."""
     try:
         return json.dumps(run(panel, json.loads(config_json), progress))
+    except AnalysisError as e:
+        return json.dumps({"error": str(e)})
+
+
+def placebo_gaps_json(panel, config_json, units_json, progress=None):
+    """JSON wrapper of ``placebo_gaps`` for the web worker."""
+    try:
+        return json.dumps(placebo_gaps(panel, json.loads(config_json), json.loads(units_json), progress))
     except AnalysisError as e:
         return json.dumps({"error": str(e)})

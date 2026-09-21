@@ -8,13 +8,13 @@ other cities. Everything runs in the browser, in Python via
 [Pyodide](https://pyodide.org/), so the site is static files and can be hosted
 on GitHub Pages.
 
-The estimator and conformal intervals are from
+The estimators, conformal intervals and placebo tests are from
 [SynthPower](https://github.com/apwheele/SynthPower), which tests how well
 these intervals work; see that repository for the methods and evidence.
-`docs/py/synth_methods.py` is a copy of SynthPower's `methods.py` (estimators
-and conformal intervals only, plus an option to drop the lasso intercept), and
-the tests check that the site gives the same numbers as SynthPower's
-`LassoSynth` class.
+`docs/py/synth_methods.py` is a copy of SynthPower's `methods.py` (without the
+block permutation test, plus an option to drop the lasso intercept), and the
+tests check that the site gives the same numbers as SynthPower's `LassoSynth`
+class, including its placebo tests.
 
 ## What the site does
 
@@ -26,21 +26,34 @@ the tests check that the site gives the same numbers as SynthPower's
   as pre-period, post-period, or is left out. The analysis window can be
   shortened.
 - **Estimator**: lasso with an intercept and non-negative coefficients
-  (default, penalty by 5-fold cross-validation or fixed), lasso without an
-  intercept, or classic synth (weights that sum to one).
-- **Conformal intervals**: rolling-origin forecast errors within the
-  pre-period (default; the approach that kept its coverage in SynthPower),
-  the jackknife with independent cumulative draws (Wheeler 2023), or the
-  jackknife with block sums. 80% to 99% levels.
+  (default), lasso without an intercept, or classic synth (weights that sum
+  to one). The lasso penalty (alpha) is chosen by 5-fold cross-validation
+  unless you set it by hand.
+- **Intervals**: rolling-origin forecast errors within the pre-period
+  (default; the conformal approach that kept its coverage in SynthPower), the
+  jackknife with independent cumulative draws (Wheeler 2023), the jackknife
+  with block sums, or placebo tests. 80% to 99% levels. Placebo tests fit
+  every donor city above a population cutoff (default 250,000) as if it were
+  treated; with the cross-validated lasso each placebo gets its own penalty,
+  so the page spreads them over several Python workers (about a minute for
+  the Memphis example's 78 placebos on a 4-core machine). The page says how
+  many post-period months get a band before you run: rolling-origin and
+  block-sum bands need enough pre-period months for the post-period length,
+  and placebo bands need at least 19 placebos for 95%.
 - **Donor pool**: every other city with complete data in the window, less a
   population cutoff and any cities you leave out.
 - **Output**: observed vs. synthetic, monthly and cumulative effects with
   intervals, trajectories of every donor city, the coefficient table, and a
-  monthly table, with CSV downloads. The settings are saved in the URL, so a
-  link reproduces an analysis.
+  monthly table, with CSV downloads. **Print report** prints all of it with
+  the settings, the RTCI data version (file, Git revision, download date) and
+  software versions, since a later data update can change the results.
+  **Copy link** makes a link that fills in the same settings.
 
-The page starts empty. Two buttons fill in every setting for an example and
-run it (the settings are in `docs/examples.json`):
+Nothing runs until you press Run analysis, and Python is only downloaded once
+you start filling in the form.
+
+The page starts empty. Two buttons fill in every setting for an example
+(the settings are in `docs/examples.json`):
 
 - **Memphis task force**: Memphis violent crime, intervention starting
   September 29, 2025 (so October 2025 is the first post-period month), with

@@ -191,8 +191,8 @@ def test_estimators(panel):
 
 
 def test_level_and_infinite_bands(panel):
-    wide = A.run(panel, {**MEMPHIS, "level": 0.99, "interval": "block"})
-    narrow = A.run(panel, {**MEMPHIS, "level": 0.8, "interval": "block"})
+    wide = A.run(panel, {**MEMPHIS, "level": 0.99, "interval": "jackknife"})
+    narrow = A.run(panel, {**MEMPHIS, "level": 0.8, "interval": "jackknife"})
     # A 99% rolling band needs 99+ forecasts per horizon; 61 reach month 9
     assert A.run(panel, {**MEMPHIS, "level": 0.99})["summary"]["cum_lo"] is None
     assert wide["summary"]["cum_hi"] - wide["summary"]["cum_lo"] > narrow["summary"]["cum_hi"] - narrow["summary"]["cum_lo"]
@@ -289,3 +289,70 @@ def test_run_matches_lassosynth(panel, synthpower):
     np.testing.assert_allclose(ro["pred_hi"], eff["RollHig"])
     np.testing.assert_allclose(ro["cum_lo"], eff["RollCumLow"])
     np.testing.assert_allclose(ro["cum_hi"], eff["RollCumHig"])
+
+
+# ---------------------------------------------------------------------------
+# Placebo intervals and the block-band guard
+
+
+BIG = 1_500_000  # a small placebo pool keeps the cross-validated placebo tests quick
+
+
+def test_placebo_split_matches_single_run(panel):
+    """Splitting placebos across workers (as the page does) gives the same result."""
+    cfg = {**MEMPHIS, "interval": "placebo", "placebo_min_pop": BIG}
+    fresh = A.Panel(DATA.read_text())
+    need = A.run(fresh, {**cfg, "defer_placebos": True})["need_placebos"]
+    assert 2 <= len(need) < 20
+    gaps = {}
+    for chunk in (need[:2], need[2:]):
+        gaps.update(A.placebo_gaps(A.Panel(DATA.read_text()), cfg, chunk))
+    split = A.run(fresh, {**cfg, "placebo_gaps": gaps})
+    whole = A.run(A.Panel(DATA.read_text()), cfg)
+    assert split["placebo"] == whole["placebo"]
+    assert split["placebo"]["n"] == len(need)
+    np.testing.assert_allclose(np.array(split["dif_lo"], dtype=float), np.array(whole["dif_lo"], dtype=float))
+    assert "placebo_gaps" not in split["config"]
+
+
+def test_placebo_fixed_alpha_and_synth(panel):
+    for extra in [{"penalty": "fixed", "alpha": 10}, {"estimator": "synth"}]:
+        out = A.run(panel, {**MEMPHIS, **extra, "interval": "placebo"})
+        n = out["placebo"]["n"]
+        assert n > 19 and out["n_ref"][0] == n
+        assert 1 / (n + 1) <= out["placebo"]["p_cum"] <= 1
+        assert out["cum_lo"][0] is not None and out["dif_lo"][0] is not None
+
+
+def test_placebo_errors(panel):
+    with pytest.raises(A.AnalysisError, match="placebo"):
+        A.run(panel, {**MEMPHIS, "interval": "placebo", "placebo_min_pop": 1e9})
+
+
+def test_block_band_guard(panel):
+    out = A.run(panel, {**EXAMPLES["la_gascon"]["config"], "interval": "block"})
+    T0, H = out["T0"], out["H"]
+    ok = [T0 - h + 1 >= 19 for h in range(1, H + 1)]  # 19 blocks for a 95% band
+    assert [v is not None for v in out["cum_lo"]] == ok
+    assert out["n_ref"][0] == T0 and out["n_ref"][-1] == T0 - H + 1
+
+
+def test_placebo_matches_lassosynth(panel, synthpower):
+    lassosynth, _ = synthpower
+    import pandas as pd
+
+    y, X, T0, donors = memphis(panel)
+    wide = pd.DataFrame(X, columns=[panel.ids[i] for i in donors])
+    wide["TNMPD0000"] = y
+    pool = [panel.ids[i] for i in donors if panel.pop[i] >= BIG]
+    s = lassosynth.Synth(wide, "TNMPD0000", post=T0)
+    s.suggest_alpha()
+    s.fit()
+    p = s.placebos(pool=pool)
+    eff = s.effects(alpha=0.2)
+    out = A.run(panel, {**MEMPHIS, "interval": "placebo", "placebo_min_pop": BIG, "level": 0.8})
+    assert out["placebo"]["n"] == len(pool)
+    assert out["placebo"]["p_cum"] == pytest.approx(p["cum"])
+    assert out["placebo"]["p_ratio"] == pytest.approx(p["ratio"])
+    np.testing.assert_allclose(out["cum_lo"], eff["PlaceboCumLow"])
+    np.testing.assert_allclose(out["cum_hi"], eff["PlaceboCumHig"])

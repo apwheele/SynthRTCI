@@ -3,36 +3,34 @@
 
 "use strict";
 
-const APP_VERSION = "2026-09-21b";
+const APP_VERSION = "2026-09-21e";
 
 const CRIMES = [
   ["violent", "Violent crime"], ["murder", "Murder"], ["rape", "Rape"], ["robbery", "Robbery"],
   ["assault", "Aggravated assault"], ["property", "Property crime"], ["burglary", "Burglary"],
   ["theft", "Theft"], ["motor", "Motor vehicle theft"],
 ];
-
-// Agencies with 2025 National Guard deployments (Memphis, Washington, Los Angeles city and county,
-// New Orleans, Chicago, Portland)
-const GUARD_2025 = ["TNMPD0000", "DCMPD0000", "CA0194200", "CA0190000", "LANPD0000", "ILCPD0000", "OR0260200"];
+// Component crimes, as in py/analysis.py: a month is missing if any component is
+const COMPONENTS = { violent: ["murder", "rape", "robbery", "assault"], property: ["burglary", "theft", "motor"] };
 
 // Same as DEFAULTS in py/analysis.py: no city, outcome or date; the examples are in examples.json
 const DEFAULTS = {
   city: null, crime: null, start: null, partial: "pre", first: null, last: null,
   estimator: "lasso", penalty: "cv", alpha: 1, interval: "rolling", min_train: 36, level: 0.95,
-  min_pop: 0, exclude: [],
+  min_pop: 0, exclude: [], placebo_min_pop: 250000,
 };
 
 // Short names for the URL hash
 const HASH_KEYS = {
   city: "city", crime: "crime", start: "start", partial: "partial", first: "from", last: "to",
   estimator: "est", penalty: "pen", alpha: "alpha", interval: "int", min_train: "train", level: "level",
-  min_pop: "minpop", exclude: "ex",
+  min_pop: "minpop", exclude: "ex", placebo_min_pop: "pmin",
 };
 
 const $ = (id) => document.getElementById(id);
 const state = {
-  data: null, examples: {}, byId: new Map(), byLabel: new Map(), cfg: null, worker: null, ready: false,
-  runId: 0, running: false, pending: false, result: null,
+  data: null, dataText: null, helpers: [], examples: {}, byId: new Map(), byLabel: new Map(), cfg: null, worker: null,
+  ready: false, runId: 0, running: false, pending: false, result: null, resultTime: null, runtime: "",
 };
 
 // ---------------------------------------------------------------------------
@@ -62,30 +60,29 @@ function interval(lo, hi, d, suffix = "") {
 }
 
 // ---------------------------------------------------------------------------
-// Configuration: form <-> config <-> URL hash
+// Configuration: form <-> config <-> link (URL hash)
 
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
   const cfg = structuredClone(DEFAULTS);
-  state.pending = p.has(HASH_KEYS.city);
   for (const [k, h] of Object.entries(HASH_KEYS)) {
     if (!p.has(h)) continue;
     const v = p.get(h);
     if (k === "exclude") cfg.exclude = v ? v.split(",") : [];
-    else if (["alpha", "min_train", "level", "min_pop"].includes(k)) cfg[k] = Number(v);
+    else if (["alpha", "min_train", "level", "min_pop", "placebo_min_pop"].includes(k)) cfg[k] = Number(v);
     else cfg[k] = v || null;
   }
   return cfg;
 }
 
-function writeHash(cfg) {
+function linkFor(cfg) {
   const p = new URLSearchParams();
   for (const [k, h] of Object.entries(HASH_KEYS)) {
     const v = cfg[k];
     if (k === "exclude") p.set(h, v.join(","));
     else if (v !== null && v !== undefined && v !== "") p.set(h, String(v));
   }
-  history.replaceState(null, "", `#${p.toString()}`);
+  return `${location.origin}${location.pathname}#${p.toString()}`;
 }
 
 function radio(name) {
@@ -106,12 +103,13 @@ function writeForm(cfg) {
   $("first").value = cfg.first || state.data.dates[0];
   $("last").value = cfg.last || state.data.dates.at(-1);
   setRadio("estimator", cfg.estimator);
-  setRadio("penalty", cfg.penalty);
+  $("fix-alpha").checked = cfg.penalty === "fixed";
   $("alpha").value = cfg.alpha;
   setRadio("interval", cfg.interval);
   $("min_train").value = cfg.min_train;
   $("level").value = String(cfg.level);
   $("min_pop").value = cfg.min_pop;
+  $("placebo_min_pop").value = cfg.placebo_min_pop;
   state.exclude = [...cfg.exclude];
   renderChips();
   syncVisibility();
@@ -131,12 +129,13 @@ function readForm() {
     first: first === dates[0] ? null : first,
     last: last === dates.at(-1) ? null : last,
     estimator: radio("estimator"),
-    penalty: radio("penalty"),
+    penalty: $("fix-alpha").checked ? "fixed" : "cv",
     alpha: Number($("alpha").value),
     interval: radio("interval"),
     min_train: Number($("min_train").value),
     level: Number($("level").value),
     min_pop: Number($("min_pop").value) || 0,
+    placebo_min_pop: Number($("placebo_min_pop").value) || 0,
     exclude: [...state.exclude],
   };
 }
@@ -144,8 +143,9 @@ function readForm() {
 function syncVisibility() {
   const synth = radio("estimator") === "synth";
   $("penalty-box").hidden = synth;
-  $("alpha").hidden = radio("penalty") !== "fixed";
+  $("alpha").hidden = !$("fix-alpha").checked;
   $("min-train-box").style.visibility = radio("interval") === "rolling" ? "visible" : "hidden";
+  $("placebo-box").hidden = radio("interval") !== "placebo";
 }
 
 function periods(cfg) {
@@ -167,9 +167,80 @@ function span(months) {
   return `${monthLabel(months[0])} – ${monthLabel(months[n - 1])} (${n} month${n === 1 ? "" : "s"})`;
 }
 
+// Smallest number of errors with a finite conformal quantile at this level: ceil(level (n + 1)) <= n
+function minErrors(level) {
+  let n = 1;
+  while (Math.ceil(level * (n + 1) - 1e-9) > n) n++;
+  return n;
+}
+
+// Donor and placebo cities for these settings (cities with every month of the outcome in the window)
+function poolSizes(cfg, p) {
+  const d = state.data;
+  if (!cfg.crime || !p) return null;
+  const win = [...p.pre, ...p.post].map((m) => d.dates.indexOf(m));
+  const parts = COMPONENTS[cfg.crime] || [cfg.crime];
+  const ex = new Set(cfg.exclude);
+  let donors = 0, placebos = 0;
+  d.cities.forEach((c, i) => {
+    if (c.id === cfg.city || ex.has(c.id) || c.pop < cfg.min_pop) return;
+    if (!win.every((t) => parts.every((k) => d.counts[k][i][t] !== null))) return;
+    donors += 1;
+    if (c.pop >= cfg.placebo_min_pop) placebos += 1;
+  });
+  return { donors, placebos };
+}
+
+// How many post-period months get a band with these settings
+function updateIntervalHint(cfg, p) {
+  const el = $("interval-hint");
+  el.textContent = "";
+  if (!p || !p.post.length) return;
+  const T0 = p.pre.length, H = p.post.length, lv = pctLevel(cfg.level);
+  const need = minErrors(cfg.level);
+  const fix = "Shorten the first training window, lower the level, or use another method.";
+  if (cfg.interval === "rolling") {
+    const mt = cfg.min_train;
+    if (!(mt >= 2 && mt < T0)) {
+      el.textContent = `The first training window must be between 2 and ${T0 - 1} months (the pre-period is ${T0}).`;
+      return;
+    }
+    const reach = (h) => Math.max(0, T0 - mt - h + 1);  // forecasts that reach h months ahead
+    const covered = Math.max(0, Math.min(H, T0 - mt + 1 - need));
+    const why = `A ${lv} band for month h needs ${need} pre-period forecasts that reach h months ahead, ` +
+      "and every forecast has to end before the intervention.";
+    if (covered === H) {
+      el.textContent = `Rolling-origin bands cover all ${H} post-period months (${reach(H)} forecasts reach ` +
+        `${H} month${H === 1 ? "" : "s"} ahead; ${need} are needed).`;
+    } else if (covered === 0) {
+      el.textContent = `Rolling-origin bands cover none of the ${H} post-period months: only ${reach(1)} forecasts ` +
+        `reach even 1 month ahead. ${why} ${fix}`;
+    } else {
+      el.textContent = `Rolling-origin bands cover only the first ${covered} of ${H} post-period months. ${why} ${fix}`;
+    }
+  } else if (cfg.interval === "block") {
+    const covered = Math.max(0, Math.min(H, T0 + 1 - need));
+    if (covered < H) {
+      el.textContent = `Block-sum bands cover only the first ${covered} of ${H} post-period months: a ${lv} band ` +
+        `for month h needs ${need} runs of h consecutive pre-period errors that do not wrap around the ` +
+        `${T0}-month pre-period.`;
+    }
+  } else if (cfg.interval === "placebo") {
+    const n = poolSizes(cfg, p);
+    if (!n) return;
+    const slow = cfg.estimator !== "synth" && cfg.penalty === "cv";
+    el.textContent = `${n.placebos} placebo cities` + (n.placebos < need ? `, too few for a ${lv} band ` +
+      `(${need} are needed); lower the population cutoff.` : ".") +
+      (slow ? " Each placebo gets its own cross-validated penalty, about a second or more per city, spread " +
+        "over several Python workers. Setting alpha by hand makes this much faster, but every placebo " +
+        "then uses that same alpha, which is in rate units, so it penalizes lower-rate cities more." : "");
+  }
+}
+
 function updatePeriods() {
   const cfg = readForm();
   const p = periods(cfg);
+  updateIntervalHint(cfg, p);
   const el = $("periods");
   if (!p) { el.textContent = "Enter a start date."; return; }
   let txt = `Pre-period ${span(p.pre)}. Post-period ${span(p.post)}.`;
@@ -186,6 +257,7 @@ function updatePeriods() {
 function renderChips() {
   const ul = $("exclude-list");
   ul.replaceChildren();
+  if (state.data) updatePeriods();  // the placebo count depends on the cities left out
   if (!state.exclude.length) {
     const li = document.createElement("li");
     li.className = "empty";
@@ -205,6 +277,7 @@ function renderChips() {
     b.addEventListener("click", () => {
       state.exclude = state.exclude.filter((x) => x !== id);
       renderChips();
+      markChanged();
     });
     li.append(name, b);
     ul.append(li);
@@ -223,6 +296,7 @@ function addExclusion() {
   if (!state.exclude.includes(c.id)) state.exclude.push(c.id);
   inp.value = "";
   renderChips();
+  markChanged();
 }
 
 // ---------------------------------------------------------------------------
@@ -238,37 +312,129 @@ function showError(msg) {
   el.hidden = !msg;
 }
 
-function startWorker(text) {
+// A Python worker. Calls are matched to replies by request ID, so several can run at once.
+let requestSeq = 0;
+
+function makeWorker(text, main = false) {
   const w = new Worker(`worker.js?v=${APP_VERSION}`, { type: "module" });
-  state.worker = w;
-  w.onmessage = (e) => {
-    const m = e.data;
-    if (m.type === "status") setStatus(m.msg);
-    else if (m.type === "ready") {
-      state.ready = true;
-      $("py-version").textContent = `${m.runtime} (Pyodide)`;
-      $("run-btn").disabled = false;
-      if (state.pending) runAnalysis();
-      else setStatus("Ready. Choose a city, an outcome and a start date, or load an example.", false);
-    } else if (m.type === "fatal") {
-      setStatus("Python could not start", false);
-      showError(`Could not start the Python runtime: ${m.msg}`);
-    } else if (m.id !== state.runId) {
-      // stale message from an earlier run
-    } else if (m.type === "progress") setStatus(m.msg);
-    else if (m.type === "result") finishRun(JSON.parse(m.json));
-    else if (m.type === "error") finishRun({ error: `Unexpected error in the analysis: ${m.msg}` });
+  const pw = { w, calls: new Map(), ok: false, dead: false };
+  const failAll = (msg) => {
+    pw.dead = true;
+    for (const c of pw.calls.values()) c.reject(new Error(msg));
+    pw.calls.clear();
   };
-  w.onerror = (e) => {
-    setStatus("Python could not start", false);
-    showError(`The analysis worker failed: ${e.message || "unknown error"}`);
-  };
+  pw.ready = new Promise((resolve, reject) => {
+    w.onmessage = (e) => {
+      const m = e.data;
+      if (m.type === "status") { if (main && !state.running) setStatus(m.msg); }
+      else if (m.type === "ready") { pw.ok = true; resolve(m.runtime); }
+      else if (m.type === "fatal") { failAll(m.msg); reject(new Error(m.msg)); }
+      else {
+        const c = pw.calls.get(m.rid);
+        if (!c) return;
+        if (m.type === "progress") c.onProgress(m.msg);
+        else {
+          pw.calls.delete(m.rid);
+          if (m.type === "reply") c.resolve(m.json); else c.reject(new Error(m.msg));
+        }
+      }
+    };
+    w.onerror = (e) => {
+      const msg = e.message || "the Python worker failed";
+      failAll(msg);
+      reject(new Error(msg));
+    };
+  });
+  pw.ready.catch(() => {});
   w.postMessage({ type: "init", data: text, version: APP_VERSION });
+  return pw;
 }
 
-function runAnalysis() {
-  if (state.running) { state.pending = true; return; }  // run again when the current run finishes
-  if (!state.ready) return;
+function callWorker(pw, msg, onProgress = () => {}) {
+  if (pw.dead) return Promise.reject(new Error("the Python worker stopped"));
+  const rid = ++requestSeq;
+  return new Promise((resolve, reject) => {
+    pw.calls.set(rid, { resolve, reject, onProgress });
+    pw.w.postMessage({ ...msg, rid });
+  });
+}
+
+// Python (about 30 MB the first time) starts loading when someone starts filling in the form
+function ensurePython() {
+  if (state.worker || !state.dataText) return;
+  const pw = makeWorker(state.dataText, true);
+  state.worker = pw;
+  pw.ready.then((runtime) => {
+    state.ready = true;
+    state.runtime = `${runtime} (Pyodide)`;
+    $("py-version").textContent = state.runtime;
+    $("run-btn").disabled = false;
+    if (state.pending) runAnalysis();
+    else setStatus("Python is ready. Press Run analysis when the settings are filled in.", false);
+  }, (err) => {
+    setStatus("Python could not start", false);
+    showError(`Could not start the Python runtime: ${err.message}`);
+  });
+}
+
+// Extra Python workers for cross-validated placebos. Each is a full copy of Python and the data
+// (roughly 200 MB of memory), so their number is capped by the device's cores and memory.
+function ensureHelpers() {
+  const cores = navigator.hardwareConcurrency || 2;
+  const memory = navigator.deviceMemory || 8;
+  const n = memory < 4 ? 0 : Math.max(0, Math.min(3, cores - 2));
+  state.helpers = state.helpers.filter((h) => !h.dead);
+  while (state.helpers.length < n) state.helpers.push(makeWorker(state.dataText));
+  return state.helpers;
+}
+
+function duration(sec) {
+  if (sec < 1) return `${sec.toFixed(2)} seconds`;
+  if (sec < 90) return `${Math.round(sec)} second${Math.round(sec) === 1 ? "" : "s"}`;
+  return `${Math.round(sec / 60)} minutes`;
+}
+
+// Fit every placebo, spread over the main worker and any helpers; returns {id: gap}
+function computePlacebos(cfg, ids) {
+  const slow = cfg.estimator !== "synth" && cfg.penalty === "cv";
+  const workers = [state.worker, ...(slow ? ensureHelpers() : [])];
+  const size = slow ? 2 : 50;
+  const queue = [];
+  for (let i = 0; i < ids.length; i += size) queue.push(ids.slice(i, i + size));
+  const gaps = {};
+  let done = 0;
+  const t0 = performance.now();
+  const report = () => {
+    const active = workers.filter((w) => w.ok && !w.dead).length;
+    const left = done ? `, about ${duration((performance.now() - t0) / 1000 / done * (ids.length - done))} left` : "";
+    setStatus(`Placebos: ${done} of ${ids.length} fitted with ${active} Python worker${active === 1 ? "" : "s"}${left}`);
+  };
+  report();
+  return new Promise((resolve, reject) => {
+    let failed = false;
+    const drain = async (pw) => {
+      try { await pw.ready; } catch { return; }  // a helper that cannot start just does not help
+      while (queue.length && !failed) {
+        const units = queue.shift();
+        try {
+          const out = JSON.parse(await callWorker(pw, { type: "placebos", config: cfg, units }, () => { done++; report(); }));
+          if (out.error) throw new Error(out.error);
+          Object.assign(gaps, out);
+        } catch (err) {
+          if (pw !== state.worker && pw.dead) { queue.push(units); return; }  // a helper died: others take over
+          failed = true;
+          reject(err);
+          return;
+        }
+        if (Object.keys(gaps).length === ids.length) resolve(gaps);
+      }
+    };
+    workers.forEach(drain);
+  });
+}
+
+async function runAnalysis() {
+  if (state.running) return;
   state.pending = false;
   const cfg = readForm();
   const required = [["city", cfg.city, "Pick a city from the list."], ["crime", cfg.crime, "Choose an outcome."],
@@ -277,23 +443,39 @@ function runAnalysis() {
     $(id).setCustomValidity(value ? "" : msg);
     if (!value) { $(id).reportValidity(); return; }
   }
+  if (!state.ready) {
+    // Run was pressed before Python finished loading: run once it has
+    state.pending = true;
+    ensurePython();
+    $("run-btn").disabled = true;
+    setStatus("Loading Python; the analysis will run when it is ready");
+    return;
+  }
   showError("");
   state.cfg = cfg;
   state.running = true;
-  state.runId += 1;
   $("run-btn").disabled = true;
   $("results").classList.add("busy");
   setStatus("Running");
-  state.worker.postMessage({ type: "run", id: state.runId, config: cfg });
+  const t0 = performance.now();
+  let res;
+  try {
+    const run = (config) => callWorker(state.worker, { type: "run", config }, setStatus).then(JSON.parse);
+    if (cfg.interval === "placebo") {
+      res = await run({ ...cfg, defer_placebos: true });
+      if (res.need_placebos) res = await run({ ...cfg, placebo_gaps: await computePlacebos(cfg, res.need_placebos) });
+    } else {
+      res = await run(cfg);
+    }
+    if (!res.error) res.timing.total = (performance.now() - t0) / 1000;
+  } catch (err) {
+    res = { error: `Unexpected error in the analysis: ${err.message}` };
+  }
+  finishRun(res);
 }
 
 function finishRun(res) {
   state.running = false;
-  showRun(res);
-  if (state.pending) runAnalysis();
-}
-
-function showRun(res) {
   $("run-btn").disabled = false;
   $("results").classList.remove("busy");
   if (res.error) {
@@ -305,9 +487,8 @@ function showRun(res) {
   $("results").classList.remove("stale");
   $("empty").hidden = true;
   state.result = res;
-  writeHash(state.cfg);
-  const t = res.timing.total;
-  setStatus(`Done in ${t < 1 ? t.toFixed(2) : t.toFixed(1)} seconds.`, false);
+  state.resultTime = new Date();
+  setStatus(`Done in ${duration(res.timing.total)}.`, false);
   renderResults();
 }
 
@@ -373,14 +554,14 @@ function bandTraces(x, lo, hi, t, name, hover = "skip") {
   ];
 }
 
-function renderFit(res, t, d) {
+function renderFit(res, t, d, el = "chart-fit") {
   const x = res.dates.map(toDate);
   const post = x.slice(res.T0);
   const lv = pctLevel(res.config.level);
   const text = res.pred.map((_, i) => i < res.T0 ? "" :
     `  (${lv}: ${interval(res.pred_lo[i - res.T0], res.pred_hi[i - res.T0], d)})`);
   const iv = interventionShape(res, t);
-  Plotly.react("chart-fit", [
+  Plotly.react(el, [
     ...bandTraces(post, res.pred_lo, res.pred_hi, t, `${lv} interval`),
     { x, y: res.obs, type: "scatter", mode: "lines", name: res.city.label, line: { color: t.ink, width: 2 },
       hovertemplate: `%{y:,.${d}f}<extra>${res.city.label}</extra>` },
@@ -389,7 +570,7 @@ function renderFit(res, t, d) {
   ], layout(t, { shapes: [iv.shape], annotations: [iv.annotation] }), PLOT_CONFIG);
 }
 
-function renderMonthly(res, t, d) {
+function renderMonthly(res, t, d, el = "chart-monthly") {
   const x = res.dates.slice(res.T0).map(toDate);
   const lv = pctLevel(res.config.level);
   const view = radio("monthly-view");
@@ -422,14 +603,14 @@ function renderMonthly(res, t, d) {
     ];
     shapes = [zeroLine(t)];
   }
-  Plotly.react("chart-monthly", traces, layout(t, { shapes, showlegend: view === "levels" }), PLOT_CONFIG);
+  Plotly.react(el, traces, layout(t, { shapes, showlegend: view === "levels" }), PLOT_CONFIG);
 }
 
-function renderCum(res, t, d) {
+function renderCum(res, t, d, el = "chart-cum") {
   const x = res.dates.slice(res.T0).map(toDate);
   const lv = pctLevel(res.config.level);
   const text = res.cum.map((_, i) => `  (${lv}: ${interval(res.cum_lo[i], res.cum_hi[i], d)})`);
-  Plotly.react("chart-cum", [
+  Plotly.react(el, [
     ...bandTraces(x, res.cum_lo, res.cum_hi, t, `${lv} band`),
     { x, y: res.cum, text, type: "scatter", mode: x.length <= 36 ? "lines+markers" : "lines", name: "Cumulative difference",
       line: { color: t.s1, width: 2 }, marker: { size: 8, color: t.s1, line: { color: t.surface, width: 2 } },
@@ -443,7 +624,7 @@ function quantile(values, q) {
   return a[Math.min(a.length - 1, Math.floor(q * a.length))];
 }
 
-function renderDonors(res, t, d) {
+function renderDonors(res, t, d, el = "chart-donors") {
   const x = res.dates.map(toDate);
   const weighted = new Set(res.weights.map((w) => w.id));
   const view = radio("donor-view");
@@ -491,7 +672,7 @@ function renderDonors(res, t, d) {
     if (Number.isFinite(top)) yaxis.range = [0, top * 1.05];
   }
   const iv = interventionShape(res, t);
-  Plotly.react("chart-donors", traces, layout(t, {
+  Plotly.react(el, traces, layout(t, {
     yaxis, hovermode: "closest", shapes: [iv.shape], annotations: [iv.annotation],
   }), PLOT_CONFIG);
 }
@@ -507,6 +688,26 @@ function tile(label, value, sub) {
   const c = document.createElement("div"); c.className = "t-sub"; c.textContent = sub;
   div.append(a, b, c);
   return div;
+}
+
+// Why intervals are missing for part or all of the post-period, or "" when they are complete
+function bandNote(res) {
+  const k = res.cum_lo.findIndex((v) => v === null);
+  if (k === -1) return "";
+  const lv = pctLevel(res.config.level);
+  const why = {
+    rolling: "too few pre-period forecasts reach that far ahead (see the hint under the interval settings)",
+    block: "too few runs of consecutive pre-period errors that do not wrap around the pre-period",
+    placebo: `too few placebo cities for a ${lv} interval (${minErrors(res.config.level)} are needed)`,
+  }[res.config.interval] || `too few pre-period errors for a ${lv} interval`;
+  if (k === 0) return `No ${lv} intervals: ${why}.`;
+  const post = res.dates.slice(res.T0);
+  return `${lv} intervals stop after ${monthLabel(post[k - 1])}, month ${k} of ${res.H}: ${why}.`;
+}
+
+function placeboText(pl) {
+  return `Placebo test with ${pl.n} placebo cities: p = ${num(pl.p_cum, 3)} for the cumulative change and ` +
+    `p = ${num(pl.p_ratio, 3)} for the ratio of post- to pre-period RMSPE (smallest possible ${num(1 / (pl.n + 1), 3)}).`;
 }
 
 function renderSummary(res, d) {
@@ -527,11 +728,11 @@ function renderSummary(res, d) {
   let note = `Over ${postSpan}, ${res.city.label} had ${num(s.obs_total, d)} ${res.crime_label.toLowerCase()} ` +
     `offenses per 100,000 residents, against ${num(s.pred_total, d)} for the synthetic control. `;
   if (s.cum_lo === null || s.cum_hi === null) {
-    note += `The ${lv} cumulative band is not available: too few pre-period forecasts reach ${res.H} months ahead. ` +
-      "Use a shorter first training window, an earlier start to the data, or a lower level.";
+    note += `The ${lv} cumulative band does not reach the end of the post-period. ${bandNote(res)}`;
   } else {
     note += `The ${lv} band for the cumulative change ${s.excludes_zero ? "excludes" : "includes"} zero.`;
   }
+  if (res.placebo) note += ` ${placeboText(res.placebo)}`;
   const dr = res.dropped;
   const parts = [];
   if (dr.excluded.length) parts.push(`${dr.excluded.length} left out`);
@@ -581,7 +782,8 @@ function renderTables(res, d) {
   table($("coef-table"), ["#", "City", "Population", "Coefficient", "Pre-period mean", "Contribution"], rows, [0, 1]);
 
   const post = res.dates.slice(res.T0);
-  const refLabel = res.config.interval === "rolling" ? "Forecasts used" : "Jackknife errors";
+  const refLabel = { rolling: "Forecasts used", block: "Blocks", placebo: "Placebos" }[res.config.interval] ||
+    "Jackknife errors";
   table($("month-table"), ["Month", "Observed", "Synthetic", "Difference", "Low", "High",
     "Cumulative", "Cum. low", "Cum. high", refLabel],
   post.map((m, i) => ({ cells: [
@@ -591,10 +793,65 @@ function renderTables(res, d) {
   ] })));
 }
 
+function renderSettings(res) {
+  const c = res.config, f = res.fit, lv = pctLevel(c.level);
+  const src = state.data.source;
+  const [y, m, dd] = c.start.split("-").map(Number);
+  const startText = new Date(Date.UTC(y, m - 1, dd)).toLocaleDateString("en-US",
+    { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
+  const partial = res.partial ? ` ${monthLabel(res.partial)} is partly treated and is ` +
+    `${c.partial === "drop" ? "left out" : "counted as pre-period"}.` : "";
+  const est = c.estimator === "synth" ? `${res.estimator_label}: non-negative weights that sum to one` :
+    `${res.estimator_label}, non-negative coefficients, penalty (alpha) ${num(f.alpha, 4)} ` +
+    (c.penalty === "cv" ? "chosen by 5-fold cross-validation on the pre-period" : "fixed");
+  const iv = `${res.interval_label}, ${lv}` +
+    (c.interval === "rolling" ? `, first training window ${c.min_train} months` : "") +
+    (c.interval === "jackknife" ? `, ${c.cumsim.toLocaleString("en-US")} simulations (seed ${c.seed})` : "") +
+    (res.placebo ? `, placebo cities with population at least ${res.placebo.min_pop.toLocaleString("en-US")}. ` +
+      placeboText(res.placebo).replace(/\.$/, "") : "");
+  const list = (xs) => (xs.length ? xs.join("; ") : "None");
+  const rows = [
+    ["Treated city", `${res.city.label} (agency ${res.city.id}), population ${res.city.pop.toLocaleString("en-US")}`],
+    ["Outcome", `${res.crime_label}, monthly offenses per 100,000 residents`],
+    ["Intervention start", `${startText}.${partial}`],
+    ["Pre-period", span(res.dates.slice(0, res.T0))],
+    ["Post-period", span(res.dates.slice(res.T0))],
+    ["Estimator", est],
+    ["Intervals", `${iv}. ${bandNote(res)}`.trim()],
+    ["Donor pool", `${f.n_donors.toLocaleString("en-US")} cities` +
+      (c.min_pop > 0 ? `, population at least ${c.min_pop.toLocaleString("en-US")}` : "") +
+      (res.dropped.small ? ` (${res.dropped.small} smaller cities not used)` : "")],
+    ["Left out of the donor pool", list(res.dropped.excluded)],
+    ["Not used: missing months in the window", list(res.dropped.missing)],
+    ["Data", `Real-Time Crime Index (github.com/AH-Datalytics/rtci), ${src.file || "snapshot"}` +
+      (src.blob_sha ? `, Git blob ${src.blob_sha.slice(0, 10)}` : "") +
+      `, downloaded ${(src.downloaded_at_utc || "").slice(0, 10)}, months ${monthLabel(state.data.dates[0])} to ` +
+      `${monthLabel(state.data.dates.at(-1))}`],
+    ["Software", `${state.runtime}; estimators and intervals from SynthPower (github.com/apwheele/SynthPower)`],
+    ["Run", `${state.resultTime.toLocaleString("en-US", { dateStyle: "long", timeStyle: "short" })}, ` +
+      `${location.origin}${location.pathname}`],
+    ["Settings link", linkFor(c)],
+  ];
+  const tb = $("settings-table");
+  tb.replaceChildren();
+  for (const [k, v] of rows) {
+    const tr = tb.insertRow();
+    const th = document.createElement("th");
+    th.scope = "row";
+    th.textContent = k;
+    const td = tr.insertCell();
+    td.textContent = v;
+    tr.prepend(th);
+  }
+}
+
 function renderResults() {
   const res = state.result;
   if (!res) return;
   $("results").hidden = false;
+  for (const img of document.querySelectorAll(".print-img")) img.removeAttribute("src");
+  const note = bandNote(res);
+  for (const el of document.querySelectorAll(".band-note")) { el.textContent = note; el.hidden = !note; }
   const t = theme();
   const maxRate = Math.max(...res.obs.filter(Number.isFinite));
   const d = maxRate < 10 ? 2 : 1;
@@ -604,7 +861,70 @@ function renderResults() {
   renderCum(res, t, d);
   renderDonors(res, t, d);
   renderTables(res, d);
+  renderSettings(res);
 }
+
+// ---------------------------------------------------------------------------
+// Printed report
+
+// Light colors for paper, whatever the screen theme
+function paperTheme() {
+  return {
+    surface: "#ffffff", ink: "#0b0b0b", ink2: "#52514e", muted: "#898781", grid: "#e1e0d9", axis: "#c3c2b7",
+    s1: "#2a78d6", s2: "#eb6834", wash: "rgba(42, 120, 214, 0.14)", font: theme().font, dark: false,
+  };
+}
+
+// Draw each chart offscreen in paper colors and keep a PNG for printing (WebGL and dark themes print badly)
+async function makePrintImages(res) {
+  const t = paperTheme();
+  const d = Math.max(...res.obs.filter(Number.isFinite)) < 10 ? 2 : 1;
+  const charts = [[renderFit, "img-fit", 380], [renderMonthly, "img-monthly", 360], [renderCum, "img-cum", 360],
+    [renderDonors, "img-donors", 440]];
+  for (const [draw, id, height] of charts) {
+    const div = document.createElement("div");
+    div.style.cssText = `position:fixed;left:-20000px;top:0;width:1000px;height:${height}px`;
+    document.body.append(div);
+    try {
+      draw(res, t, d, div);
+      $(id).src = await Plotly.toImage(div, { format: "png", width: 1000, height, scale: 2 });
+    } catch (err) {
+      $(id).removeAttribute("src");  // the live chart prints instead
+      console.warn("Could not draw the chart for printing", err);
+    } finally {
+      Plotly.purge(div);
+      div.remove();
+    }
+  }
+}
+
+async function printReport() {
+  const res = state.result;
+  if (!res) return;
+  const btn = $("print-btn");
+  btn.disabled = true;
+  btn.textContent = "Preparing the report";
+  try {
+    await makePrintImages(res);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Print report";
+  }
+  window.print();
+}
+
+// Open collapsed sections for printing, and close them again afterwards
+const openedForPrint = [];
+window.addEventListener("beforeprint", () => {
+  $("report-time").textContent = new Date().toLocaleString("en-US", { dateStyle: "long", timeStyle: "short" });
+  for (const el of document.querySelectorAll("#results details:not([open])")) {
+    el.open = true;
+    openedForPrint.push(el);
+  }
+});
+window.addEventListener("afterprint", () => {
+  while (openedForPrint.length) openedForPrint.pop().open = false;
+});
 
 // ---------------------------------------------------------------------------
 // Downloads
@@ -654,16 +974,22 @@ function downloadWeights() {
 // ---------------------------------------------------------------------------
 // Examples
 
+// Results no longer match the settings: dim them until the next run
+function markChanged() {
+  if (state.result && !state.running) {
+    $("results").classList.add("stale");
+    setStatus("Settings changed. Press Run analysis to update the results.", false);
+  }
+}
+
 function loadExample(key) {
   const ex = state.examples[key];
   writeForm({ ...structuredClone(DEFAULTS), ...structuredClone(ex.config) });
   for (const id of ["city", "crime", "start"]) $(id).setCustomValidity("");
   showError("");
-  if (state.ready) runAnalysis();
-  else {
-    state.pending = true;
-    setStatus(`${ex.button} example filled in. It will run when Python has loaded.`);
-  }
+  ensurePython();
+  markChanged();
+  if (!state.running) setStatus(`${ex.button} example filled in. Press Run analysis to fit it.`, false);
 }
 
 function startOver() {
@@ -673,8 +999,7 @@ function startOver() {
   $("results").classList.remove("stale");
   $("empty").hidden = false;
   showError("");
-  history.replaceState(null, "", location.pathname + location.search);
-  if (state.ready) setStatus("Ready. Choose a city, an outcome and a start date, or load an example.", false);
+  if (state.ready) setStatus("Python is ready. Press Run analysis when the settings are filled in.", false);
 }
 
 function exampleButton(key) {
@@ -729,27 +1054,37 @@ function populate() {
 
 function wire() {
   $("controls").addEventListener("submit", (e) => { e.preventDefault(); runAnalysis(); });
-  $("controls").addEventListener("change", () => { syncVisibility(); updatePeriods(); });
+  $("controls").addEventListener("change", (e) => {
+    syncVisibility();
+    updatePeriods();
+    if (e.target.id !== "exclude-add") markChanged();
+  });
+  $("min_train").addEventListener("input", updatePeriods);
+  $("fix-alpha").addEventListener("change", () => {
+    const f = state.result && state.result.fit;
+    if ($("fix-alpha").checked && f && f.alpha && state.result.config.penalty === "cv") {
+      $("alpha").value = Number(f.alpha.toPrecision(4));
+    }
+    if ($("fix-alpha").checked) $("alpha").focus();
+  });
+  for (const ev of ["focusin", "input", "change"]) $("controls").addEventListener(ev, ensurePython);
   $("city").addEventListener("input", () => $("city").setCustomValidity(""));
   $("exclude-add").addEventListener("input", () => $("exclude-add").setCustomValidity(""));
   $("exclude-add-btn").addEventListener("click", addExclusion);
   $("exclude-add").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addExclusion(); } });
-  $("guard-btn").addEventListener("click", () => {
-    for (const id of GUARD_2025) if (!state.exclude.includes(id)) state.exclude.push(id);
-    renderChips();
-  });
-  $("clear-btn").addEventListener("click", () => { state.exclude = []; renderChips(); });
+  $("clear-btn").addEventListener("click", () => { state.exclude = []; renderChips(); markChanged(); });
   $("clear-all-btn").addEventListener("click", startOver);
   for (const id of ["crime", "start"]) $(id).addEventListener("input", () => $(id).setCustomValidity(""));
+  // A link that fills in the current settings (it does not run them)
   $("link-btn").addEventListener("click", async () => {
-    writeHash(readForm());
+    const url = linkFor(readForm());
     try {
-      await navigator.clipboard.writeText(location.href);
+      await navigator.clipboard.writeText(url);
       $("link-btn").textContent = "Link copied";
+      setTimeout(() => { $("link-btn").textContent = "Copy link"; }, 2000);
     } catch {
-      $("link-btn").textContent = "Link is in the address bar";
+      window.prompt("Copy this link:", url);
     }
-    setTimeout(() => { $("link-btn").textContent = "Copy link"; }, 2000);
   });
   for (const name of ["monthly-view", "donor-view", "donor-scale"]) {
     document.querySelectorAll(`input[name="${name}"]`).forEach((el) => el.addEventListener("change", () => {
@@ -761,6 +1096,7 @@ function wire() {
     }));
   }
   $("dl-monthly").addEventListener("click", downloadMonthly);
+  $("print-btn").addEventListener("click", printReport);
   $("dl-weights").addEventListener("click", downloadWeights);
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", renderResults);
 }
@@ -788,11 +1124,17 @@ async function main() {
   for (const c of state.data.cities) { state.byId.set(c.id, c); state.byLabel.set(c.label, c); }
   populate();
   populateExamples();
+  const fromLink = new URLSearchParams(location.hash.slice(1)).has(HASH_KEYS.city);
   writeForm(readHash());
+  // Settings from a shared link fill in the form once; a reload starts empty
+  if (location.hash) history.replaceState(null, "", location.pathname + location.search);
   if (typeof Plotly === "undefined") {
     showError("The charting library (Plotly) did not load; check the network connection.");
   }
-  startWorker(text);
+  state.dataText = text;
+  $("run-btn").disabled = false;
+  setStatus(fromLink ? "Settings filled in from the link. Press Run analysis to fit them." :
+    "Choose a city, an outcome and a start date, or fill in an example.", false);
 }
 
 main();

@@ -1,8 +1,8 @@
-"""Synthetic control estimators and conformal inference.
+"""Synthetic control estimators, placebo tests and conformal inference.
 
 Copied from ``src/synthpower/methods.py`` in
-https://github.com/apwheele/SynthPower, keeping the estimators and the
-conformal methods (the placebo and block permutation tests are left out).
+https://github.com/apwheele/SynthPower, keeping the estimators, the placebo
+tests and the conformal methods (the block permutation test is left out).
 The one change is an ``intercept`` option for the lasso; with
 ``intercept=True`` (the default) the code is the same as SynthPower's.
 
@@ -13,8 +13,10 @@ Estimators of the counterfactual for a treated unit:
 - ``lasso``: a lasso regression of the treated series on the donor series,
   with non-negative coefficients and an intercept (Wheeler 2019).
 
-Conformal intervals:
+Intervals and tests:
 
+- ``placebo_pvalues`` and ``placebo_band``: in-space placebos (Abadie et
+  al. 2010), with a cumulative band whose width comes from the placebos.
 - ``jackknife``: leave-one-period-out prediction errors in the pre-period,
   with cumulative bands built from those errors either independently per
   period (``cum_band_iid``, as in Wheeler 2023) or as consecutive blocks
@@ -94,6 +96,55 @@ def fit_lasso(X, y, alpha, max_iter=10000, intercept=True):
     m = Lasso(alpha=alpha, positive=True, fit_intercept=intercept, max_iter=max_iter)
     m.fit(X, y)
     return LassoFit(m)
+
+
+# ---------------------------------------------------------------------------
+# Placebo inference
+
+
+def gaps(fitter, Y, unit, donors, T0):
+    """Observed minus synthetic for ``unit`` using ``donors`` (column indices)."""
+    X = Y[:, donors]
+    y = Y[:, unit]
+    fit = fitter(X[:T0], y[:T0])
+    return y - fit.predict(X)
+
+
+def placebo_stats(gap, T0):
+    pre, post = gap[:T0], gap[T0:]
+    rmspe_pre = np.sqrt(np.mean(pre**2))
+    return {
+        "ratio": np.sqrt(np.mean(post**2)) / rmspe_pre,
+        "cum": np.abs(post.sum()) / rmspe_pre,
+    }
+
+
+def placebo_pvalues(treated_stats, placebo_stats_list):
+    """p = (1 + #placebos at least as extreme) / (N placebos + 1)."""
+    n = len(placebo_stats_list)
+    out = {}
+    for k, v in treated_stats.items():
+        other = np.array([p[k] for p in placebo_stats_list])
+        out[k] = (1 + np.sum(other >= v)) / (n + 1)
+    return out
+
+
+def placebo_band(gap, placebo_gaps, T0, alpha=0.05):
+    """Cumulative band whose width comes from the placebos.
+
+    At each post-period horizon, placebo cumulative gaps are scaled by each
+    placebo's pre-period RMSPE, and the conformal quantile of those scaled
+    values is multiplied by the treated unit's pre-period RMSPE. The band
+    excludes zero at the last period exactly when the placebo test on
+    |cumulative gap| / pre-period RMSPE rejects.
+    """
+    P = np.asarray(placebo_gaps)
+    scale = np.sqrt(np.mean(P[:, :T0] ** 2, axis=1))
+    pcum = np.cumsum(P[:, T0:], axis=1) / scale[:, None]
+    q = np.array([conformal_quantile(pcum[:, h], alpha) for h in range(pcum.shape[1])])
+    cum = np.cumsum(gap[T0:])
+    width = q * np.sqrt(np.mean(gap[:T0] ** 2))
+    return cum, cum - width, cum + width
 
 
 # ---------------------------------------------------------------------------

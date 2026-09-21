@@ -1,10 +1,12 @@
 // Runs the Python analysis (docs/py/) in Pyodide, off the page's main thread.
 // A module worker: cross-origin importScripts() is blocked in some browsers.
+// The page may start several of these to compute placebos in parallel.
 //
 // Messages in:  {type: "init", data: <rtci.json text>, version}
-//               {type: "run", id, config}
+//               {type: "run", rid, config}
+//               {type: "placebos", rid, config, units}
 // Messages out: {type: "status", msg}, {type: "ready", runtime}, {type: "fatal", msg}
-//               {type: "progress", id, msg}, {type: "result", id, json}, {type: "error", id, msg}
+//               {type: "progress", rid, msg}, {type: "reply", rid, json}, {type: "error", rid, msg}
 
 import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide.mjs";
 
@@ -38,17 +40,15 @@ f"Python {sys.version.split()[0]}, NumPy {numpy.__version__}, SciPy {scipy.__ver
   postMessage({ type: "ready", runtime });
 }
 
-function run(id, config) {
-  const progress = (msg) => postMessage({ type: "progress", id, msg: String(msg) });
-  py.globals.set("CFG", JSON.stringify(config));
-  py.globals.set("PROGRESS", progress);
+function call(rid, code, vars) {
+  py.globals.set("PROGRESS", (msg) => postMessage({ type: "progress", rid, msg: String(msg) }));
+  for (const [k, v] of Object.entries(vars)) py.globals.set(k, v);
   try {
-    const json = py.runPython("analysis.run_json(PANEL, CFG, PROGRESS)");
-    postMessage({ type: "result", id, json });
+    postMessage({ type: "reply", rid, json: py.runPython(code) });
   } catch (err) {
     // Unexpected Python errors: send the last line of the traceback
     const lines = String(err.message || err).trim().split("\n");
-    postMessage({ type: "error", id, msg: lines[lines.length - 1] });
+    postMessage({ type: "error", rid, msg: lines[lines.length - 1] });
   }
 }
 
@@ -61,6 +61,9 @@ onmessage = async (e) => {
       postMessage({ type: "fatal", msg: String(err.message || err) });
     }
   } else if (m.type === "run") {
-    run(m.id, m.config);
+    call(m.rid, "analysis.run_json(PANEL, CFG, PROGRESS)", { CFG: JSON.stringify(m.config) });
+  } else if (m.type === "placebos") {
+    call(m.rid, "analysis.placebo_gaps_json(PANEL, CFG, UNITS, PROGRESS)",
+      { CFG: JSON.stringify(m.config), UNITS: JSON.stringify(m.units) });
   }
 };
