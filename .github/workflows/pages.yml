@@ -1,0 +1,77 @@
+# Publishes docs/ to GitHub Pages, and refreshes the Real-Time Crime Index data.
+#
+# - A push to main runs the tests and deploys the site as committed.
+# - Every Monday (and on a manual "Run workflow"), scripts/build_data.py checks
+#   the RTCI repository. If the data changed and the tests still pass, the new
+#   data are committed to main and the site is redeployed. If nothing changed,
+#   the scheduled run stops without committing or deploying.
+name: Update data and deploy site
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 14 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.data.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+
+      - name: Refresh RTCI data
+        id: data
+        if: github.event_name != 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          uv run python scripts/build_data.py
+          if git diff --quiet -- docs/data data/source_metadata.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Test
+        run: uv run pytest -q
+
+      - name: Commit updated data
+        if: steps.data.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/data data/source_metadata.json
+          git commit -m "Update RTCI data"
+          git push
+
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    # Scheduled runs deploy only when the data changed
+    if: github.event_name != 'schedule' || needs.build.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

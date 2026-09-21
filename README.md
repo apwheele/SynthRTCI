@@ -1,5 +1,7 @@
 # SynthRTCI
 
+**Website: <https://apwheele.github.io/SynthRTCI/>**
+
 A website that runs a synthetic control analysis for a city in the
 [Real-Time Crime Index](https://realtimecrimeindex.com/) (RTCI): pick a city,
 a crime, and the date an intervention started, and it estimates how the city's
@@ -15,6 +17,11 @@ these intervals work; see that repository for the methods and evidence.
 block permutation test, plus an option to drop the lasso intercept), and the
 tests check that the site gives the same numbers as SynthPower's `LassoSynth`
 class, including its placebo tests.
+
+Suggested citation:
+
+> Wheeler, A. P. (2026). *Synthetic control for city crime* [Web
+> application]. https://apwheele.github.io/SynthRTCI/
 
 ## What the site does
 
@@ -86,19 +93,41 @@ opening `docs/index.html` as a file will not work.
 
 ## Updating the data
 
+The site is published by a GitHub Actions workflow
+(`.github/workflows/pages.yml`), so updating the data is just a commit of new
+data files; there is no separate redeploy step.
+
+- **Automatically**: every Monday the workflow runs `scripts/build_data.py`.
+  If the RTCI data changed and the tests pass, it commits the new
+  `docs/data/rtci.json` and `data/source_metadata.json` to `main` and
+  redeploys the site. If nothing changed, it does nothing.
+- **On demand**: run the workflow from the repository's Actions tab ("Update
+  data and deploy site", then "Run workflow"), or `gh workflow run pages.yml`.
+- **Locally**: run the script, check the result, and push; the push
+  redeploys the site.
+
 ```bash
 uv run python scripts/build_data.py
+uv run pytest
+git add docs/data data/source_metadata.json
+git commit -m "Update RTCI data"
+git push
 ```
 
-This follows the update approach in
+`scripts/build_data.py` follows the update approach in
 [CrimeDecomp](https://github.com/apwheele/CrimeDecomp)
 (`src/sync_latest_data.R`): it asks the GitHub API for the current
 `Crime_Index_Reported_Crime_Trends_*.csv` in
 [AH-Datalytics/rtci](https://github.com/AH-Datalytics/rtci), downloads it and
-the agency file used for city names only when their Git revisions have
-changed, and rebuilds `docs/data/rtci.json`. The revisions are recorded in
-`data/source_metadata.json`. Raw downloads go to `data/raw/` (not committed).
-Use `--offline` to rebuild from the raw files without checking upstream.
+the agency file used for city names when their Git revisions differ from the
+ones recorded in `data/source_metadata.json`, and rebuilds
+`docs/data/rtci.json`. Its output only changes when the upstream files do.
+Raw downloads go to `data/raw/` (not committed). Use `--offline` to rebuild
+from the raw files without checking upstream.
+
+Results for the same settings can change after a data update (new months, and
+RTCI revisions to past months), which is why the printed report records the
+data version.
 
 ## Tests
 
@@ -113,9 +142,9 @@ the ones Pyodide 314.0.7 ships, so native and browser results match.
 
 ## Deploying to GitHub Pages
 
-The site is the static `docs/` folder. In the repository settings, under
-Pages, deploy from the `main` branch, `/docs` folder. (Pages on a private
-repository needs a paid GitHub plan.)
+The workflow deploys the static `docs/` folder on every push to `main`
+(Settings > Pages > Source is "GitHub Actions"). It runs the tests first; the
+tests that compare against SynthPower are skipped there.
 
 ## Layout
 
@@ -126,6 +155,7 @@ repository needs a paid GitHub plan.)
   `py/synth_methods.py` (from SynthPower), and `data/rtci.json`.
 - `scripts/build_data.py` -- refresh the RTCI snapshot and build the data file.
 - `scripts/serve.py` -- local web server.
+- `.github/workflows/pages.yml` -- tests, weekly data refresh, and deployment.
 - `tests/` -- pytest tests of `docs/py/`, run natively.
 
 ## License

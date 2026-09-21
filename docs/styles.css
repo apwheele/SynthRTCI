@@ -67,6 +67,7 @@ h3 { font-size: 1rem; font-weight: 600; }
 
 .site-header, .site-footer { max-width: 1440px; margin: 0 auto; padding: 20px 24px; }
 .site-header .lede { margin: 6px 0 0; color: var(--ink-2); max-width: 80ch; }
+.site-header .cite { margin: 8px 0 0; color: var(--ink-2); font-size: 0.85rem; max-width: 80ch; }
 .site-footer { color: var(--ink-2); font-size: 0.85rem; }
 
 .layout {

@@ -10,8 +10,13 @@ file used for city names) only when its Git blob revision has changed.
     uv run python scripts/build_data.py --offline  # rebuild from data/raw only
 
 Writes data/source_metadata.json and docs/data/rtci.json. Raw downloads go
-to data/raw/ (not committed, about 50 MB).
+to data/raw/ (not committed, about 50 MB). The output only changes when the
+upstream files do, so the GitHub Actions workflow
+(.github/workflows/pages.yml) can run this on a schedule and commit and
+deploy only real updates. Set GITHUB_TOKEN to avoid GitHub API rate limits.
 """
+
+import os
 
 import argparse
 import hashlib
@@ -43,8 +48,10 @@ NAME_OVERRIDES = {
 
 def github_contents(path):
     url = f"https://api.github.com/repos/{REPO}/contents/{path}?ref={REF}"
-    req = Request(url, headers={"User-Agent": "SynthRTCI data updater",
-                                "Accept": "application/vnd.github+json"})
+    headers = {"User-Agent": "SynthRTCI data updater", "Accept": "application/vnd.github+json"}
+    if os.environ.get("GITHUB_TOKEN"):
+        headers["Authorization"] = f"Bearer {os.environ['GITHUB_TOKEN']}"
+    req = Request(url, headers=headers)
     with urlopen(req) as r:
         return json.load(r)
 
@@ -58,22 +65,24 @@ def md5(path):
 
 
 def sync(remote, dest, prior):
-    """Download ``remote`` to ``dest`` unless the blob revision is unchanged."""
-    if prior and prior.get("blob_sha") == remote["sha"] and dest.exists():
-        print(f"Upstream revision unchanged: {remote['path']}")
-        changed = False
-    else:
+    """Download ``remote`` to ``dest`` unless the blob revision is unchanged.
+
+    Changed means different content from the file recorded in ``prior``, so a
+    fresh checkout (no data/raw) that downloads the same file is unchanged.
+    """
+    if not (prior and prior.get("blob_sha") == remote["sha"] and dest.exists()):
         print(f"Downloading {remote['download_url']}")
         tmp = dest.with_suffix(dest.suffix + ".tmp")
         req = Request(remote["download_url"], headers={"User-Agent": "SynthRTCI data updater"})
         with urlopen(req) as r, open(tmp, "wb") as f:
             while chunk := r.read(1 << 20):
                 f.write(chunk)
-        new = md5(tmp)
-        changed = not dest.exists() or md5(dest) != new
         tmp.replace(dest)
+    new = md5(dest)
+    changed = not prior or prior.get("md5") != new or prior.get("name") != remote["name"]
+    print(f"{'Changed' if changed else 'Unchanged'}: {remote['path']}")
     return {"name": remote["name"], "repository_path": remote["path"], "blob_sha": remote["sha"],
-            "source_url": remote["download_url"], "md5": md5(dest)}, changed
+            "source_url": remote["download_url"], "md5": new}, changed
 
 
 def refresh():
@@ -91,15 +100,14 @@ def refresh():
     for k in remotes:
         out[k], changed = sync(remotes[k], dests[k], files.get(k))
         any_changed |= changed
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    meta = {
-        "source_repository": f"https://github.com/{REPO}",
-        "source_ref": REF,
-        "downloaded_at_utc": now if any_changed or "downloaded_at_utc" not in prior else prior["downloaded_at_utc"],
-        "checked_at_utc": now,
-        "files": out,
-    }
-    META.write_text(json.dumps(meta, indent=2) + "\n")
+    if any_changed or not prior:
+        meta = {
+            "source_repository": f"https://github.com/{REPO}",
+            "source_ref": REF,
+            "downloaded_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            "files": out,
+        }
+        META.write_text(json.dumps(meta, indent=2) + "\n")
     print("RTCI data changed." if any_changed else "RTCI data unchanged.")
 
 
@@ -156,7 +164,6 @@ def build():
             "blob_sha": crime_file.get("blob_sha", ""),
             "downloaded_at_utc": meta.get("downloaded_at_utc", ""),
         },
-        "built_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
         "dates": dates,
         "cities": cities,
         "counts": counts,
