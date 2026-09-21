@@ -1,0 +1,29 @@
+[project]
+name = "synthrtci"
+version = "0.1.0"
+description = "Browser-based synthetic control analysis of Real-Time Crime Index city data"
+readme = "README.md"
+authors = [
+    { name = "apwheele", email = "apwheele@gmail.com" }
+]
+requires-python = ">=3.14"
+# Pinned to the versions bundled with Pyodide 314.0.7, which runs the same
+# code in the browser (docs/py/).
+dependencies = [
+    "numpy==2.4.6",
+    "scikit-learn==1.8.0",
+    "scipy==1.18.0",
+]
+
+[dependency-groups]
+dev = [
+    "matplotlib>=3.11.2",
+    "pandas>=3.0.6",
+    "pytest>=9.1.1",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

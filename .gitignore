@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+# Raw RTCI downloads (about 50 MB); rebuilt by scripts/build_data.py
+data/raw/

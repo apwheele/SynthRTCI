@@ -1,0 +1,22 @@
+{
+  "source_repository": "https://github.com/AH-Datalytics/rtci",
+  "source_ref": "main",
+  "downloaded_at_utc": "2026-09-21 13:50:33",
+  "checked_at_utc": "2026-09-21 13:50:33",
+  "files": {
+    "crime_data": {
+      "name": "Crime_Index_Reported_Crime_Trends_Jan17_Jun26.csv",
+      "repository_path": "data/Crime_Index_Reported_Crime_Trends_Jan17_Jun26.csv",
+      "blob_sha": "2e590e415ed7b5f54a63d17bccbb9f3cc767c99f",
+      "source_url": "https://raw.githubusercontent.com/AH-Datalytics/rtci/main/data/Crime_Index_Reported_Crime_Trends_Jan17_Jun26.csv",
+      "md5": "75abe5bb23443eab6361d6f65e35103e"
+    },
+    "agency_source": {
+      "name": "pre_processed.csv",
+      "repository_path": "data/deprecated/pre_processed.csv",
+      "blob_sha": "a96ce6e8d5eebd83a523769c63212d5256ccf93d",
+      "source_url": "https://raw.githubusercontent.com/AH-Datalytics/rtci/main/data/deprecated/pre_processed.csv",
+      "md5": "540ac52d195c123b74b6a7f61a70c8a8"
+    }
+  }
+}

@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>City Crime Synth</title>
+<meta name="description" content="Synthetic control analysis of monthly city crime rates from the Real-Time Crime Index, run in the browser.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M1 12 5 7l3 3 6-7' fill='none' stroke='%232a78d6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@3.7.0/plotly.min.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<header class="site-header">
+  <div>
+    <h1>Synthetic control for city crime</h1>
+    <p class="lede">Estimate how a city's monthly crime rate changed after an intervention, compared to a
+      synthetic control built from other cities in the
+      <a href="https://realtimecrimeindex.com/" target="_blank" rel="noopener">Real-Time Crime Index</a>.
+      The model runs in your browser, in Python (via <a href="https://pyodide.org/" target="_blank" rel="noopener">Pyodide</a>),
+      using the lasso and conformal intervals from
+      <a href="https://github.com/apwheele/SynthPower" target="_blank" rel="noopener">SynthPower</a>.</p>
+  </div>
+</header>
+
+<div class="layout">
+  <form id="controls" class="controls" autocomplete="off">
+    <fieldset>
+      <legend>Treated city and outcome</legend>
+      <label for="city">City</label>
+      <input id="city" list="city-list" placeholder="Type a city name" spellcheck="false">
+      <datalist id="city-list"></datalist>
+      <label for="crime">Outcome (monthly rate per 100,000)</label>
+      <select id="crime"></select>
+    </fieldset>
+
+    <fieldset>
+      <legend>Intervention</legend>
+      <label for="start">Start date</label>
+      <input id="start" type="date">
+      <label for="partial">The month it starts in</label>
+      <select id="partial">
+        <option value="pre">Counts as pre-period</option>
+        <option value="post">Counts as post-period</option>
+        <option value="drop">Is left out</option>
+      </select>
+      <div class="row2">
+        <div><label for="first">Data from</label><input id="first" type="month"></div>
+        <div><label for="last">Data to</label><input id="last" type="month"></div>
+      </div>
+      <p id="periods" class="hint"></p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Model</legend>
+      <div class="seg" role="radiogroup" aria-label="Estimator">
+        <label><input type="radio" name="estimator" value="lasso"><span>Lasso + intercept</span></label>
+        <label><input type="radio" name="estimator" value="lasso_noint"><span>Lasso, no intercept</span></label>
+        <label><input type="radio" name="estimator" value="synth"><span>Classic synth</span></label>
+      </div>
+      <div id="penalty-box">
+        <span class="label">Lasso penalty</span>
+        <div class="seg" role="radiogroup" aria-label="Lasso penalty">
+          <label><input type="radio" name="penalty" value="cv"><span>Cross-validated</span></label>
+          <label><input type="radio" name="penalty" value="fixed"><span>Fixed</span></label>
+        </div>
+        <input id="alpha" type="number" min="0" step="any" aria-label="Fixed lasso penalty">
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Conformal intervals</legend>
+      <div class="choices" role="radiogroup" aria-label="Interval method">
+        <label><input type="radio" name="interval" value="rolling">
+          <span><b>Rolling-origin forecasts</b>Errors from forecasting ahead within the pre-period. Kept correct
+            coverage in SynthPower's state-level tests; needs a long pre-period.</span></label>
+        <label><input type="radio" name="interval" value="jackknife">
+          <span><b>Jackknife (Wheeler 2023)</b>Leave-one-month-out errors, cumulative band from independent draws.
+            SynthPower found it too narrow after the first year.</span></label>
+        <label><input type="radio" name="interval" value="block">
+          <span><b>Jackknife, block sums</b>Leave-one-month-out errors, cumulative band from sums of consecutive
+            errors.</span></label>
+      </div>
+      <div class="row2">
+        <div id="min-train-box"><label for="min_train">First training window (months)</label>
+          <input id="min_train" type="number" min="2" step="1"></div>
+        <div><label for="level">Level</label>
+          <select id="level">
+            <option value="0.8">80%</option>
+            <option value="0.9">90%</option>
+            <option value="0.95">95%</option>
+            <option value="0.99">99%</option>
+          </select></div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Donor cities</legend>
+      <label for="min_pop">Smallest donor population</label>
+      <input id="min_pop" type="number" min="0" step="10000">
+      <label for="exclude-add">Leave out cities</label>
+      <div class="add-row">
+        <input id="exclude-add" list="city-list" placeholder="Add a city" spellcheck="false">
+        <button type="button" id="exclude-add-btn" class="btn">Add</button>
+      </div>
+      <ul id="exclude-list" class="chips" aria-label="Cities left out of the donor pool"></ul>
+      <div class="btn-row">
+        <button type="button" id="guard-btn" class="btn">Add 2025 National Guard cities</button>
+        <button type="button" id="clear-btn" class="btn">Clear</button>
+      </div>
+    </fieldset>
+
+    <div class="actions">
+      <button type="submit" id="run-btn" class="btn primary" disabled>Run analysis</button>
+      <div class="btn-row">
+        <button type="button" id="link-btn" class="btn">Copy link</button>
+        <button type="button" id="reset-btn" class="btn">Memphis example</button>
+      </div>
+    </div>
+  </form>
+
+  <main id="main">
+    <div id="status" class="status" role="status" aria-live="polite">
+      <span class="spinner" aria-hidden="true"></span><span id="status-text">Loading data</span>
+    </div>
+    <div id="error" class="error" role="alert" hidden></div>
+
+    <section id="results" class="results" hidden>
+      <h2 id="result-title"></h2>
+      <p id="result-sub" class="sub"></p>
+      <div class="tiles" id="tiles"></div>
+      <p id="result-note" class="note"></p>
+
+      <article class="card">
+        <header><h3>Observed and synthetic</h3>
+          <p class="sub">Monthly rate per 100,000. The model is fit to the months before the line; the shaded band
+            is the conformal interval for the synthetic prediction.</p></header>
+        <div id="chart-fit" class="chart"></div>
+      </article>
+
+      <div class="grid2">
+        <article class="card">
+          <header class="with-toggle"><div><h3>Monthly effect</h3>
+            <p class="sub">Each post-period month, with its interval.</p></div>
+            <div class="seg small" role="radiogroup" aria-label="Monthly chart view">
+              <label><input type="radio" name="monthly-view" value="dif" checked><span>Difference</span></label>
+              <label><input type="radio" name="monthly-view" value="levels"><span>Levels</span></label>
+            </div></header>
+          <div id="chart-monthly" class="chart"></div>
+        </article>
+        <article class="card">
+          <header><h3>Cumulative effect</h3>
+            <p class="sub">Sum of the monthly differences since the intervention.</p></header>
+          <div id="chart-cum" class="chart"></div>
+        </article>
+      </div>
+
+      <article class="card">
+        <header class="with-toggle"><div><h3>Donor city trajectories</h3>
+          <p class="sub">Every donor city's monthly rate. Hover a line to identify the city.</p></div>
+          <div class="toggles">
+            <div class="seg small" role="radiogroup" aria-label="Donors shown">
+              <label><input type="radio" name="donor-view" value="all" checked><span>All donors</span></label>
+              <label><input type="radio" name="donor-view" value="weighted"><span>With weight</span></label>
+            </div>
+            <div class="seg small" role="radiogroup" aria-label="Y axis scale">
+              <label><input type="radio" name="donor-scale" value="linear" checked><span>Linear</span></label>
+              <label><input type="radio" name="donor-scale" value="log"><span>Log</span></label>
+            </div>
+          </div></header>
+        <div id="chart-donors" class="chart tall"></div>
+      </article>
+
+      <article class="card">
+        <header class="with-toggle"><div><h3>Coefficients</h3>
+          <p class="sub" id="coef-sub"></p></div>
+          <button type="button" class="btn" id="dl-weights">Download CSV</button></header>
+        <div class="table-wrap"><table id="coef-table"></table></div>
+      </article>
+
+      <article class="card">
+        <header class="with-toggle"><div><h3>Post-period by month</h3>
+          <p class="sub">The numbers behind the monthly and cumulative charts.</p></div>
+          <button type="button" class="btn" id="dl-monthly">Download CSV</button></header>
+        <div class="table-wrap"><table id="month-table"></table></div>
+      </article>
+
+      <details class="card about">
+        <summary>How the model works</summary>
+        <p>The outcome is the treated city's monthly crime count per 100,000 residents (not annualized). Violent crime is
+          murder, rape, robbery and aggravated assault; property crime is burglary, theft and motor vehicle theft. Donor
+          cities are every other agency in the Real-Time Crime Index national sample with data in every month of the
+          window, less any left out.</p>
+        <p><b>Lasso + intercept</b> regresses the treated city's rate on the donor cities' rates over the pre-period,
+          with non-negative coefficients that need not sum to one and an intercept, so the treated city can be above or
+          below every donor (Wheeler 2019). The penalty is chosen by 5-fold cross-validation on the pre-period, never so
+          large that no donor gets weight. <b>Classic synth</b> uses non-negative weights that sum to one and no
+          intercept.</p>
+        <p><b>Rolling-origin forecasts</b>: for each month in the pre-period after the first training window, the model
+          (with the same penalty) is fit to the months before it and forecasts the next months, up to the length of the
+          post-period. The interval for post-period month <i>h</i> uses the <i>h</i>-month-ahead forecast errors, and the
+          cumulative band uses the sums of the first <i>h</i> errors, each at the finite-sample conformal quantile.
+          With too few forecasts reaching month <i>h</i> (fewer than 19 for 95%) the interval is infinite and not drawn.
+          <b>Jackknife</b>: each pre-period month is left out in turn and predicted from a model fit to the rest; the
+          pointwise interval is the prediction plus or minus the conformal quantile of those errors, and the cumulative
+          band either simulates independent draws of the errors (Wheeler 2023) or uses sums of consecutive errors.</p>
+        <p>In <a href="https://github.com/apwheele/SynthPower" target="_blank" rel="noopener">SynthPower</a>, cumulative
+          jackknife bands had far too many false positives beyond the first post-period year, including in monthly RTCI
+          city data, while rolling-origin bands kept their coverage in simulated and real state data. Implied crimes are the cumulative rate difference
+          times the city's population divided by 100,000.</p>
+      </details>
+    </section>
+  </main>
+</div>
+
+<footer class="site-footer">
+  <p>Method and code: <a href="https://github.com/apwheele/SynthPower" target="_blank" rel="noopener">SynthPower</a>
+    (Wheeler 2026). Data: <a href="https://github.com/AH-Datalytics/rtci" target="_blank" rel="noopener">Real-Time Crime
+    Index</a>, <span id="data-version"></span>. Runtime: <span id="py-version">loading</span>.</p>
+</footer>
+</body>
+</html>
