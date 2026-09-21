@@ -3,7 +3,7 @@
 
 "use strict";
 
-const APP_VERSION = "2026-09-21e";
+const APP_VERSION = "2026-09-21f";
 
 const CRIMES = [
   ["violent", "Violent crime"], ["murder", "Murder"], ["rape", "Rape"], ["robbery", "Robbery"],
@@ -28,6 +28,7 @@ const HASH_KEYS = {
 };
 
 const $ = (id) => document.getElementById(id);
+const READY_MSG = "Ready. Choose a city, an outcome and a start date, or fill in an example, then press Run analysis.";
 const state = {
   data: null, dataText: null, helpers: [], examples: {}, byId: new Map(), byLabel: new Map(), cfg: null, worker: null,
   ready: false, runId: 0, running: false, pending: false, result: null, resultTime: null, runtime: "",
@@ -359,7 +360,7 @@ function callWorker(pw, msg, onProgress = () => {}) {
   });
 }
 
-// Python (about 30 MB the first time) starts loading when someone starts filling in the form
+// Start Python (about 30 MB the first time, then cached); called when the page opens
 function ensurePython() {
   if (state.worker || !state.dataText) return;
   const pw = makeWorker(state.dataText, true);
@@ -370,7 +371,7 @@ function ensurePython() {
     $("py-version").textContent = state.runtime;
     $("run-btn").disabled = false;
     if (state.pending) runAnalysis();
-    else setStatus("Python is ready. Press Run analysis when the settings are filled in.", false);
+    else if (!state.running) setStatus(READY_MSG, false);
   }, (err) => {
     setStatus("Python could not start", false);
     showError(`Could not start the Python runtime: ${err.message}`);
@@ -999,7 +1000,7 @@ function startOver() {
   $("results").classList.remove("stale");
   $("empty").hidden = false;
   showError("");
-  if (state.ready) setStatus("Python is ready. Press Run analysis when the settings are filled in.", false);
+  if (state.ready) setStatus(READY_MSG, false);
 }
 
 function exampleButton(key) {
@@ -1067,7 +1068,6 @@ function wire() {
     }
     if ($("fix-alpha").checked) $("alpha").focus();
   });
-  for (const ev of ["focusin", "input", "change"]) $("controls").addEventListener(ev, ensurePython);
   $("city").addEventListener("input", () => $("city").setCustomValidity(""));
   $("exclude-add").addEventListener("input", () => $("exclude-add").setCustomValidity(""));
   $("exclude-add-btn").addEventListener("click", addExclusion);
@@ -1133,8 +1133,8 @@ async function main() {
   }
   state.dataText = text;
   $("run-btn").disabled = false;
-  setStatus(fromLink ? "Settings filled in from the link. Press Run analysis to fit them." :
-    "Choose a city, an outcome and a start date, or fill in an example.", false);
+  if (fromLink) setStatus("Settings filled in from the link. Press Run analysis to fit them.", false);
+  ensurePython();
 }
 
 main();

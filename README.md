@@ -49,8 +49,8 @@ class, including its placebo tests.
   software versions, since a later data update can change the results.
   **Copy link** makes a link that fills in the same settings.
 
-Nothing runs until you press Run analysis, and Python is only downloaded once
-you start filling in the form.
+Python starts loading when the page opens, but nothing runs until you press
+Run analysis.
 
 The page starts empty. Two buttons fill in every setting for an example
 (the settings are in `docs/examples.json`):
