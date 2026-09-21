@@ -25,6 +25,12 @@
 
 <div class="layout">
   <form id="controls" class="controls" autocomplete="off">
+    <fieldset id="examples-box">
+      <legend>Examples</legend>
+      <div class="btn-row example-buttons"></div>
+      <p class="hint">Fills in every setting below and runs the analysis.</p>
+    </fieldset>
+
     <fieldset>
       <legend>Treated city and outcome</legend>
       <label for="city">City</label>
@@ -44,7 +50,7 @@
         <option value="post">Counts as post-period</option>
         <option value="drop">Is left out</option>
       </select>
-      <div class="row2">
+      <div class="row2 dates">
         <div><label for="first">Data from</label><input id="first" type="month"></div>
         <div><label for="last">Data to</label><input id="last" type="month"></div>
       </div>
@@ -114,7 +120,7 @@
       <button type="submit" id="run-btn" class="btn primary" disabled>Run analysis</button>
       <div class="btn-row">
         <button type="button" id="link-btn" class="btn">Copy link</button>
-        <button type="button" id="reset-btn" class="btn">Memphis example</button>
+        <button type="button" id="clear-all-btn" class="btn">Start over</button>
       </div>
     </div>
   </form>
@@ -124,6 +130,13 @@
       <span class="spinner" aria-hidden="true"></span><span id="status-text">Loading data</span>
     </div>
     <div id="error" class="error" role="alert" hidden></div>
+
+    <section id="empty" class="card empty-state">
+      <h2>No analysis yet</h2>
+      <p>Choose a treated city, an outcome, and the date the intervention started, then run the analysis. Or start
+        from an example:</p>
+      <ul id="example-list" class="example-list"></ul>
+    </section>
 
     <section id="results" class="results" hidden>
       <h2 id="result-title"></h2>

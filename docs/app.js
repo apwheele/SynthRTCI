@@ -3,7 +3,7 @@
 
 "use strict";
 
-const APP_VERSION = "2026-09-21";
+const APP_VERSION = "2026-09-21b";
 
 const CRIMES = [
   ["violent", "Violent crime"], ["murder", "Murder"], ["rape", "Rape"], ["robbery", "Robbery"],
@@ -11,14 +11,15 @@ const CRIMES = [
   ["theft", "Theft"], ["motor", "Motor vehicle theft"],
 ];
 
-// Agencies with 2025 National Guard deployments
-const GUARD_2025 = ["TNMPD0000", "DCMPD0000", "CA0194200", "LANPD0000", "ILCPD0000", "OR0260200"];
+// Agencies with 2025 National Guard deployments (Memphis, Washington, Los Angeles city and county,
+// New Orleans, Chicago, Portland)
+const GUARD_2025 = ["TNMPD0000", "DCMPD0000", "CA0194200", "CA0190000", "LANPD0000", "ILCPD0000", "OR0260200"];
 
-// Same as DEFAULTS in py/analysis.py: the Memphis Safe Task Force example
+// Same as DEFAULTS in py/analysis.py: no city, outcome or date; the examples are in examples.json
 const DEFAULTS = {
-  city: "TNMPD0000", crime: "violent", start: "2025-09-29", partial: "pre", first: null, last: null,
+  city: null, crime: null, start: null, partial: "pre", first: null, last: null,
   estimator: "lasso", penalty: "cv", alpha: 1, interval: "rolling", min_train: 36, level: 0.95,
-  min_pop: 0, exclude: GUARD_2025,
+  min_pop: 0, exclude: [],
 };
 
 // Short names for the URL hash
@@ -30,8 +31,8 @@ const HASH_KEYS = {
 
 const $ = (id) => document.getElementById(id);
 const state = {
-  data: null, byId: new Map(), byLabel: new Map(), cfg: null, worker: null, ready: false,
-  runId: 0, running: false, result: null,
+  data: null, examples: {}, byId: new Map(), byLabel: new Map(), cfg: null, worker: null, ready: false,
+  runId: 0, running: false, pending: false, result: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -66,6 +67,7 @@ function interval(lo, hi, d, suffix = "") {
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
   const cfg = structuredClone(DEFAULTS);
+  state.pending = p.has(HASH_KEYS.city);
   for (const [k, h] of Object.entries(HASH_KEYS)) {
     if (!p.has(h)) continue;
     const v = p.get(h);
@@ -98,7 +100,7 @@ function setRadio(name, value) {
 function writeForm(cfg) {
   const city = state.byId.get(cfg.city);
   $("city").value = city ? city.label : "";
-  $("crime").value = cfg.crime;
+  $("crime").value = cfg.crime || "";
   $("start").value = cfg.start || "";
   $("partial").value = cfg.partial;
   $("first").value = cfg.first || state.data.dates[0];
@@ -123,8 +125,8 @@ function readForm() {
   const city = state.byLabel.get($("city").value.trim());
   return {
     city: city ? city.id : null,
-    crime: $("crime").value,
-    start: $("start").value,
+    crime: $("crime").value || null,
+    start: $("start").value || null,
     partial: $("partial").value,
     first: first === dates[0] ? null : first,
     last: last === dates.at(-1) ? null : last,
@@ -246,7 +248,8 @@ function startWorker(text) {
       state.ready = true;
       $("py-version").textContent = `${m.runtime} (Pyodide)`;
       $("run-btn").disabled = false;
-      runAnalysis();
+      if (state.pending) runAnalysis();
+      else setStatus("Ready. Choose a city, an outcome and a start date, or load an example.", false);
     } else if (m.type === "fatal") {
       setStatus("Python could not start", false);
       showError(`Could not start the Python runtime: ${m.msg}`);
@@ -264,15 +267,16 @@ function startWorker(text) {
 }
 
 function runAnalysis() {
-  if (!state.ready || state.running) return;
+  if (state.running) { state.pending = true; return; }  // run again when the current run finishes
+  if (!state.ready) return;
+  state.pending = false;
   const cfg = readForm();
-  const cityInput = $("city");
-  if (!cfg.city) {
-    cityInput.setCustomValidity("Pick a city from the list.");
-    cityInput.reportValidity();
-    return;
+  const required = [["city", cfg.city, "Pick a city from the list."], ["crime", cfg.crime, "Choose an outcome."],
+    ["start", cfg.start, "Enter the date the intervention started."]];
+  for (const [id, value, msg] of required) {
+    $(id).setCustomValidity(value ? "" : msg);
+    if (!value) { $(id).reportValidity(); return; }
   }
-  cityInput.setCustomValidity("");
   showError("");
   state.cfg = cfg;
   state.running = true;
@@ -285,6 +289,11 @@ function runAnalysis() {
 
 function finishRun(res) {
   state.running = false;
+  showRun(res);
+  if (state.pending) runAnalysis();
+}
+
+function showRun(res) {
   $("run-btn").disabled = false;
   $("results").classList.remove("busy");
   if (res.error) {
@@ -294,6 +303,7 @@ function finishRun(res) {
     return;
   }
   $("results").classList.remove("stale");
+  $("empty").hidden = true;
   state.result = res;
   writeHash(state.cfg);
   const t = res.timing.total;
@@ -454,12 +464,13 @@ function renderDonors(res, t, d) {
   const hover = `%{text}<br>%{x|%b %Y}: %{y:,.${d}f}<extra></extra>`;
   const traces = [
     { ...other, type: "scattergl", mode: "lines", name: "Other donors", hovertemplate: hover,
-      line: { color: t.muted, width: 1 }, opacity: t.dark ? 0.35 : 0.3, visible: view === "all" ? true : "legendonly" },
-    { ...wt, type: "scatter", mode: "lines", name: "Donors with weight", hovertemplate: hover,
+      line: { color: t.muted, width: 1 }, opacity: t.dark ? 0.3 : 0.25, visible: view === "all" ? true : "legendonly" },
+    // All WebGL: Plotly draws WebGL traces above SVG ones, so mixing them would bury the treated city
+    { ...wt, type: "scattergl", mode: "lines", name: "Donors with weight", hovertemplate: hover,
       line: { color: t.s2, width: 1.5 } },
-    { x, y: res.pred, type: "scatter", mode: "lines", name: "Synthetic", line: { color: t.s1, width: 2 },
+    { x, y: res.pred, type: "scattergl", mode: "lines", name: "Synthetic", line: { color: t.s1, width: 2 },
       hovertemplate: `Synthetic<br>%{x|%b %Y}: %{y:,.${d}f}<extra></extra>` },
-    { x, y: res.obs, type: "scatter", mode: "lines", name: res.city.label, line: { color: t.ink, width: 2.5 },
+    { x, y: res.obs, type: "scattergl", mode: "lines", name: res.city.label, line: { color: t.ink, width: 2.5 },
       hovertemplate: `${res.city.label}<br>%{x|%b %Y}: %{y:,.${d}f}<extra></extra>` },
   ];
   // Keep the treated city readable: cap the default range near the top 1% of donor values
@@ -641,6 +652,54 @@ function downloadWeights() {
 }
 
 // ---------------------------------------------------------------------------
+// Examples
+
+function loadExample(key) {
+  const ex = state.examples[key];
+  writeForm({ ...structuredClone(DEFAULTS), ...structuredClone(ex.config) });
+  for (const id of ["city", "crime", "start"]) $(id).setCustomValidity("");
+  showError("");
+  if (state.ready) runAnalysis();
+  else {
+    state.pending = true;
+    setStatus(`${ex.button} example filled in. It will run when Python has loaded.`);
+  }
+}
+
+function startOver() {
+  writeForm(structuredClone(DEFAULTS));
+  state.result = null;
+  $("results").hidden = true;
+  $("results").classList.remove("stale");
+  $("empty").hidden = false;
+  showError("");
+  history.replaceState(null, "", location.pathname + location.search);
+  if (state.ready) setStatus("Ready. Choose a city, an outcome and a start date, or load an example.", false);
+}
+
+function exampleButton(key) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "btn";
+  b.textContent = state.examples[key].button;
+  b.addEventListener("click", () => loadExample(key));
+  return b;
+}
+
+function populateExamples() {
+  const keys = Object.keys(state.examples);
+  $("examples-box").hidden = !keys.length;
+  document.querySelector(".example-buttons").replaceChildren(...keys.map(exampleButton));
+  $("example-list").replaceChildren(...keys.map((k) => {
+    const li = document.createElement("li");
+    const p = document.createElement("p");
+    p.textContent = state.examples[k].description;
+    li.append(exampleButton(k), p);
+    return li;
+  }));
+}
+
+// ---------------------------------------------------------------------------
 // Start up
 
 function populate() {
@@ -651,6 +710,11 @@ function populate() {
     dl.append(o);
   }
   const sel = $("crime");
+  const ph = document.createElement("option");
+  ph.value = "";
+  ph.textContent = "Choose an outcome";
+  ph.disabled = true;
+  sel.append(ph);
   for (const [v, lab] of CRIMES) {
     const o = document.createElement("option");
     o.value = v;
@@ -675,7 +739,8 @@ function wire() {
     renderChips();
   });
   $("clear-btn").addEventListener("click", () => { state.exclude = []; renderChips(); });
-  $("reset-btn").addEventListener("click", () => { writeForm(structuredClone(DEFAULTS)); runAnalysis(); });
+  $("clear-all-btn").addEventListener("click", startOver);
+  for (const id of ["crime", "start"]) $(id).addEventListener("input", () => $(id).setCustomValidity(""));
   $("link-btn").addEventListener("click", async () => {
     writeHash(readForm());
     try {
@@ -708,11 +773,13 @@ async function main() {
     return;
   }
   let text;
+  const examples = fetch(`examples.json?v=${APP_VERSION}`).then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
   try {
     const r = await fetch(`data/rtci.json?v=${APP_VERSION}`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     text = await r.text();
     state.data = JSON.parse(text);
+    state.examples = await examples;
   } catch (err) {
     setStatus("Could not load the data", false);
     showError(`Could not load data/rtci.json (${err.message}). Serve the site over HTTP, not from a file.`);
@@ -720,6 +787,7 @@ async function main() {
   }
   for (const c of state.data.cities) { state.byId.set(c.id, c); state.byLabel.set(c.label, c); }
   populate();
+  populateExamples();
   writeForm(readHash());
   if (typeof Plotly === "undefined") {
     showError("The charting library (Plotly) did not load; check the network connection.");

@@ -44,14 +44,12 @@ INTERVALS = {
     "block": "Jackknife, block sums",
 }
 
-# Agencies with 2025 National Guard deployments, the default exclusions
-# for the Memphis example (Memphis itself is the treated city)
-NATIONAL_GUARD_2025 = ["TNMPD0000", "DCMPD0000", "CA0194200", "LANPD0000", "ILCPD0000", "OR0260200"]
-
+# Model settings when a config leaves them out. The city, outcome and start
+# date have no default; docs/examples.json has complete example configs.
 DEFAULTS = {
-    "city": "TNMPD0000",
-    "crime": "violent",
-    "start": "2025-09-29",
+    "city": None,
+    "crime": None,
+    "start": None,  # intervention start date, YYYY-MM-DD
     "partial": "pre",  # the month the intervention starts in: "pre", "post", or "drop"
     "first": None,  # first month of the analysis window, default the first month of data
     "last": None,  # last month, default the latest month of data
@@ -62,7 +60,7 @@ DEFAULTS = {
     "min_train": 36,  # months in the first rolling-origin training window
     "level": 0.95,
     "min_pop": 0,  # smallest donor population
-    "exclude": NATIONAL_GUARD_2025,
+    "exclude": [],  # donor cities to leave out, by agency ID
     "cumsim": 1000,  # simulations for the independent-draws cumulative band
     "seed": 10,
 }
@@ -168,6 +166,9 @@ def run(panel, config=None, progress=None):
     """Fit one analysis. ``config`` overrides ``DEFAULTS``; returns a dict."""
     say = progress or (lambda msg: None)
     cfg = {**DEFAULTS, **(config or {})}
+    for k, what in [("city", "a treated city"), ("crime", "an outcome"), ("start", "the intervention start date")]:
+        if not cfg[k]:
+            raise AnalysisError(f"Choose {what}.")
     if cfg["crime"] not in CRIMES:
         raise AnalysisError(f"Unknown outcome {cfg['crime']!r}.")
     if cfg["estimator"] not in ESTIMATORS:

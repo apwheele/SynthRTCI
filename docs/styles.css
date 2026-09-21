@@ -90,7 +90,8 @@ h3 { font-size: 1rem; font-weight: 600; }
   border-radius: var(--radius);
   padding: 4px 16px 16px;
 }
-fieldset { border: 0; border-bottom: 1px solid var(--grid); margin: 0; padding: 12px 0 14px; }
+/* min-width: 0 stops wide date inputs from stretching the fieldset past the panel */
+fieldset { border: 0; border-bottom: 1px solid var(--grid); margin: 0; padding: 12px 0 14px; min-width: 0; }
 legend { font-weight: 600; padding: 0; margin-bottom: 4px; float: left; width: 100%; }
 legend + * { clear: both; }
 label, .label { display: block; color: var(--ink-2); font-size: 0.85rem; margin: 8px 0 3px; }
@@ -108,7 +109,9 @@ input:focus-visible, select:focus-visible, button:focus-visible, .seg input:focu
   outline: 2px solid var(--series-1);
   outline-offset: 1px;
 }
-.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.row2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+.row2 > div { min-width: 0; }
+.row2.dates { grid-template-columns: minmax(0, 1fr); gap: 0; }
 .hint { color: var(--ink-2); font-size: 0.82rem; margin: 8px 0 0; }
 
 .seg { display: flex; flex-wrap: wrap; gap: 0; margin: 6px 0 2px; }
@@ -207,6 +210,16 @@ th, td { padding: 5px 10px; text-align: right; border-bottom: 1px solid var(--gr
 th { position: sticky; top: 0; background: var(--surface); color: var(--ink-2); font-weight: 600; }
 th:first-child, td:first-child, th.l, td.l { text-align: left; }
 tr.intercept td { color: var(--ink-2); font-style: italic; }
+
+.empty-state p { color: var(--ink-2); max-width: 80ch; }
+.example-list { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 12px; }
+.example-list li { display: flex; gap: 12px; align-items: flex-start; }
+.example-list .btn { flex: none; min-width: 180px; }
+.example-list p { margin: 0; font-size: 0.88rem; }
+.example-buttons .btn { font-weight: 600; }
+@media (max-width: 600px) {
+  .example-list li { flex-direction: column; gap: 4px; }
+}
 
 .about p { color: var(--ink-2); font-size: 0.9rem; max-width: 90ch; }
 .about summary { cursor: pointer; font-weight: 600; }

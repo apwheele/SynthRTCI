@@ -39,11 +39,24 @@ the tests check that the site gives the same numbers as SynthPower's
   monthly table, with CSV downloads. The settings are saved in the URL, so a
   link reproduces an analysis.
 
-The default is the Memphis Safe Task Force example: Memphis violent crime,
-intervention starting September 29, 2025 (so October 2025 is the first
-post-period month), with the other cities that had 2025 National Guard
-deployments (Washington, DC; Los Angeles; Chicago; Portland, OR; New Orleans)
-left out of the donor pool.
+The page starts empty. Two buttons fill in every setting for an example and
+run it (the settings are in `docs/examples.json`):
+
+- **Memphis task force**: Memphis violent crime, intervention starting
+  September 29, 2025 (so October 2025 is the first post-period month), with
+  the places that had 2025 National Guard deployments (Washington, DC; Los
+  Angeles and the LA County Sheriff; Chicago; Portland, OR; New Orleans) left
+  out of the donor pool.
+- **Los Angeles, Gascon**: Los Angeles thefts after George Gascon became
+  district attorney (December 2020 is the first post-period month) through
+  November 2024, leaving out San Francisco, Chicago, Philadelphia, New York
+  City and the LA County Sheriff, as in SynthPower. It uses the jackknife
+  intervals, since 47 pre-period months are too few for rolling-origin bands
+  over 48 post-period months. The estimate, +895 thefts per 100,000 (+16.4%),
+  is close to SynthPower's +911 (+16.7%) but not identical: the site uses the
+  population in the RTCI crime file (as CrimeDecomp does), and keeps two
+  agencies (Hoover, AL and Pontiac, MI) that SynthPower dropped for lacking
+  names in the RTCI agency file.
 
 ## Running it locally
 
@@ -94,7 +107,8 @@ repository needs a paid GitHub plan.)
 ## Layout
 
 - `docs/` -- the website: `index.html`, `styles.css`, `app.js` (controls,
-  charts, tables), `worker.js` (runs Python in a web worker),
+  charts, tables), `examples.json` (the example settings), `worker.js` (runs
+  Python in a web worker),
   `py/analysis.py` (one analysis, the code the site runs),
   `py/synth_methods.py` (from SynthPower), and `data/rtci.json`.
 - `scripts/build_data.py` -- refresh the RTCI snapshot and build the data file.

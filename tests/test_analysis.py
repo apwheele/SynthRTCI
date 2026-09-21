@@ -21,6 +21,8 @@ import analysis as A  # noqa: E402
 import synth_methods as m  # noqa: E402
 
 DATA = ROOT / "docs" / "data" / "rtci.json"
+EXAMPLES = json.loads((ROOT / "docs" / "examples.json").read_text())
+MEMPHIS = EXAMPLES["memphis"]["config"]
 SYNTHPOWER = Path(os.environ.get("SYNTHPOWER_SRC", ROOT.parent / "SynthPower" / "src"))
 
 
@@ -44,7 +46,7 @@ def memphis(panel, crime="violent"):
     """Treated series and donor matrix for the default Memphis example."""
     R = panel.rates(crime)
     tr = panel.index["TNMPD0000"]
-    excl = set(A.NATIONAL_GUARD_2025)
+    excl = set(MEMPHIS["exclude"])
     donors = [i for i in range(len(panel.ids)) if panel.ids[i] not in excl and not np.isnan(R[i]).any()]
     T0 = panel.dates.index("2025-10")
     return R[tr], R[donors].T, T0, donors
@@ -67,8 +69,9 @@ def test_data_file(panel):
         assert v.shape == (len(d["cities"]), len(months))
         ok = ~np.isnan(v)
         assert (v[ok] >= 0).all()
-    for cid in A.NATIONAL_GUARD_2025:
-        assert cid in panel.index
+    for ex in EXAMPLES.values():
+        for cid in [ex["config"]["city"]] + ex["config"]["exclude"]:
+            assert cid in panel.index
 
 
 def test_combined_crimes(panel):
@@ -91,7 +94,7 @@ def test_combined_crimes(panel):
     ("2025-09-29", "drop", "2025-10", True, True),
 ])
 def test_resolve_periods(panel, start, partial, first_post, is_partial, drop):
-    cfg = {**A.DEFAULTS, "start": start, "partial": partial}
+    cfg = {**A.DEFAULTS, **MEMPHIS, "start": start, "partial": partial}
     window, T0, part, fp = A.resolve_periods(panel.dates, cfg)
     assert fp == first_post
     assert (part is not None) == is_partial
@@ -101,7 +104,7 @@ def test_resolve_periods(panel, start, partial, first_post, is_partial, drop):
 
 
 def test_window(panel):
-    window, T0, _, _ = A.resolve_periods(panel.dates, {**A.DEFAULTS, "first": "2019-01", "last": "2026-03"})
+    window, T0, _, _ = A.resolve_periods(panel.dates, {**A.DEFAULTS, **MEMPHIS, "first": "2019-01", "last": "2026-03"})
     assert window[0] == "2019-01" and window[-1] == "2026-03"
     assert window[T0] == "2025-10"
 
@@ -118,22 +121,30 @@ def test_window(panel):
 ])
 def test_errors(panel, cfg, msg):
     with pytest.raises(A.AnalysisError, match=msg):
-        A.run(panel, cfg)
+        A.run(panel, {**MEMPHIS, **cfg})
+
+
+def test_required_settings(panel):
+    for k in ["city", "crime", "start"]:
+        with pytest.raises(A.AnalysisError, match="Choose"):
+            A.run(panel, {**MEMPHIS, k: None})
+    with pytest.raises(A.AnalysisError, match="Choose a treated city"):
+        A.run(panel, {})
 
 
 def test_missing_treated_data(panel):
     R = panel.rates("rape")
     tr = next(i for i in range(len(panel.ids)) if np.isnan(R[i]).any())
     with pytest.raises(A.AnalysisError, match="missing rape data"):
-        A.run(panel, {"city": panel.ids[tr], "crime": "rape"})
+        A.run(panel, {**MEMPHIS, "city": panel.ids[tr], "crime": "rape"})
 
 
 def test_run_json(panel):
-    out = json.loads(A.run_json(panel, json.dumps({"interval": "block"})),
+    out = json.loads(A.run_json(panel, json.dumps({**MEMPHIS, "interval": "block"})),
                      parse_constant=lambda c: pytest.fail(f"non-JSON constant {c}"))
     assert out["city"]["label"] == "Memphis, TN"
     assert len(out["obs"]) == len(out["dates"]) == out["T0"] + out["H"]
-    err = json.loads(A.run_json(panel, json.dumps({"start": "2030-01-15"})))
+    err = json.loads(A.run_json(panel, json.dumps({**MEMPHIS, "start": "2030-01-15"})))
     assert "error" in err
 
 
@@ -142,17 +153,18 @@ def test_run_json(panel):
 
 
 def test_donor_pool(panel):
-    out = A.run(panel, {"interval": "block"})
+    out = A.run(panel, {**MEMPHIS, "interval": "block"})
     _, X, _, donors = memphis(panel)
     assert out["fit"]["n_donors"] == len(donors) == X.shape[1]
     assert "TNMPD0000" not in out["donors"]["ids"]
-    assert not set(A.NATIONAL_GUARD_2025) & set(out["donors"]["ids"])
+    assert not set(MEMPHIS["exclude"]) & set(out["donors"]["ids"])
+    assert "CA0190000" in MEMPHIS["exclude"]  # LA County Sheriff
     assert sorted(out["dropped"]["excluded"]) == sorted(
-        panel.labels[panel.index[c]] for c in A.NATIONAL_GUARD_2025 if c != "TNMPD0000")
+        panel.labels[panel.index[c]] for c in MEMPHIS["exclude"] if c != "TNMPD0000")
 
 
 def test_summary_consistent(panel):
-    out = A.run(panel)
+    out = A.run(panel, MEMPHIS)
     s, pop = out["summary"], out["city"]["pop"]
     dif = np.array(out["obs"][out["T0"]:]) - np.array(out["pred"][out["T0"]:])
     np.testing.assert_allclose(out["dif"], dif)
@@ -169,25 +181,40 @@ def test_summary_consistent(panel):
 
 
 def test_estimators(panel):
-    synth = A.run(panel, {"estimator": "synth", "interval": "block"})
+    synth = A.run(panel, {**MEMPHIS, "estimator": "synth", "interval": "block"})
     assert sum(w["coef"] for w in synth["weights"]) == pytest.approx(1, abs=1e-6)
     assert synth["fit"]["intercept"] == 0 and synth["fit"]["alpha"] is None
-    noint = A.run(panel, {"estimator": "lasso_noint", "interval": "block"})
+    noint = A.run(panel, {**MEMPHIS, "estimator": "lasso_noint", "interval": "block"})
     assert noint["fit"]["intercept"] == 0
-    fixed = A.run(panel, {"penalty": "fixed", "alpha": 5, "interval": "block"})
+    fixed = A.run(panel, {**MEMPHIS, "penalty": "fixed", "alpha": 5, "interval": "block"})
     assert fixed["fit"]["alpha"] == 5
 
 
 def test_level_and_infinite_bands(panel):
-    wide = A.run(panel, {"level": 0.99, "interval": "block"})
-    narrow = A.run(panel, {"level": 0.8, "interval": "block"})
+    wide = A.run(panel, {**MEMPHIS, "level": 0.99, "interval": "block"})
+    narrow = A.run(panel, {**MEMPHIS, "level": 0.8, "interval": "block"})
     # A 99% rolling band needs 99+ forecasts per horizon; 61 reach month 9
-    assert A.run(panel, {"level": 0.99})["summary"]["cum_lo"] is None
+    assert A.run(panel, {**MEMPHIS, "level": 0.99})["summary"]["cum_lo"] is None
     assert wide["summary"]["cum_hi"] - wide["summary"]["cum_lo"] > narrow["summary"]["cum_hi"] - narrow["summary"]["cum_lo"]
     # Too few rolling origins for a 95% band: 105 - 90 - 9 + 1 = 7 reach month 9
-    few = A.run(panel, {"min_train": 90})
+    few = A.run(panel, {**MEMPHIS, "min_train": 90})
     assert few["n_ref"][-1] == 7
     assert few["cum_lo"][-1] is None and few["summary"]["excludes_zero"] is False
+
+
+def test_la_gascon_example(panel):
+    """Close to SynthPower's Los Angeles lasso result (+911 per 100,000, +16.7%).
+
+    Not identical: the site uses the population in the RTCI crime file (as
+    CrimeDecomp does) and keeps Hoover, AL and Pontiac, MI, which SynthPower
+    dropped for lacking names in the RTCI agency file.
+    """
+    out = A.run(panel, EXAMPLES["la_gascon"]["config"])
+    assert (out["T0"], out["H"], out["first_post"]) == (47, 48, "2020-12")
+    assert out["fit"]["n_donors"] == 579
+    assert out["summary"]["cum"] == pytest.approx(911, rel=0.03)
+    assert out["summary"]["pct"] == pytest.approx(16.7, abs=0.5)
+    assert out["summary"]["excludes_zero"]
 
 
 def test_intercept_default_matches_synthpower_lasso(panel):
@@ -237,7 +264,7 @@ def test_run_matches_lassosynth(panel, synthpower):
     s.rolling(min_train=36)
     eff = s.effects(alpha=0.05, cumsim=1000)
 
-    jk = A.run(panel, {"interval": "jackknife"})
+    jk = A.run(panel, {**MEMPHIS, "interval": "jackknife"})
     assert jk["fit"]["alpha"] == s.alpha
     assert jk["fit"]["rmse"] == pytest.approx(s.stats["RMSE"])
     assert jk["fit"]["r2"] == pytest.approx(s.stats["RSquare"])
@@ -257,7 +284,7 @@ def test_run_matches_lassosynth(panel, synthpower):
     for k in ours:
         assert ours[k] == pytest.approx(theirs[k])
 
-    ro = A.run(panel, {"interval": "rolling", "min_train": 36})
+    ro = A.run(panel, {**MEMPHIS, "interval": "rolling", "min_train": 36})
     np.testing.assert_allclose(ro["pred_lo"], eff["RollLow"])
     np.testing.assert_allclose(ro["pred_hi"], eff["RollHig"])
     np.testing.assert_allclose(ro["cum_lo"], eff["RollCumLow"])

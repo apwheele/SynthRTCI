@@ -1,0 +1,42 @@
+{
+  "memphis": {
+    "button": "Memphis task force",
+    "description": "Memphis violent crime after the Memphis Safe Task Force started at the end of September 2025. Cities with 2025 National Guard deployments are left out of the donor pool.",
+    "config": {
+      "city": "TNMPD0000",
+      "crime": "violent",
+      "start": "2025-09-29",
+      "partial": "pre",
+      "first": null,
+      "last": null,
+      "estimator": "lasso",
+      "penalty": "cv",
+      "alpha": 1,
+      "interval": "rolling",
+      "min_train": 36,
+      "level": 0.95,
+      "min_pop": 0,
+      "exclude": ["TNMPD0000", "DCMPD0000", "CA0194200", "CA0190000", "LANPD0000", "ILCPD0000", "OR0260200"]
+    }
+  },
+  "la_gascon": {
+    "button": "Los Angeles, Gascon",
+    "description": "Los Angeles thefts after George Gascon became district attorney (sworn in December 7, 2020) through the end of his term, as in SynthPower. Other big cities with progressive prosecutors and the LA County Sheriff are left out. The pre-period (47 months) is too short for rolling-origin bands over 48 post months, so this uses the jackknife.",
+    "config": {
+      "city": "CA0194200",
+      "crime": "theft",
+      "start": "2020-12-07",
+      "partial": "post",
+      "first": null,
+      "last": "2024-11",
+      "estimator": "lasso",
+      "penalty": "cv",
+      "alpha": 1,
+      "interval": "jackknife",
+      "min_train": 36,
+      "level": 0.95,
+      "min_pop": 0,
+      "exclude": ["CA0190000", "CA0380100", "ILCPD0000", "PAPEP0000", "NY0303000"]
+    }
+  }
+}
