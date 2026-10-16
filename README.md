@@ -104,7 +104,11 @@ data files; there is no separate redeploy step.
 - **Automatically**: every Monday the workflow runs `scripts/build_data.py`.
   If the RTCI data changed and the tests pass, it commits the new
   `docs/data/rtci.json` and `data/source_metadata.json` to `main` and
-  redeploys the site. If nothing changed, it does nothing.
+  redeploys the site. If nothing changed, it does nothing. Scheduled and
+  manual runs then email andrew.wheeler@crimede-coder.com the result
+  (updated, no update, or failed with the log attached) through Titan mail;
+  this needs the mailbox password in the `SMTP_PASSWORD` repository secret
+  (`gh secret set SMTP_PASSWORD -R apwheele/SynthRTCI`).
 - **On demand**: run the workflow from the repository's Actions tab ("Update
   data and deploy site", then "Run workflow"), or `gh workflow run pages.yml`.
 - **Locally**: run the script, check the result, and push; the push

@@ -6,6 +6,8 @@
 #   tests still pass, the new data are committed to main and the site is
 #   redeployed. If nothing changed, the scheduled run stops without committing
 #   or deploying.
+# - Scheduled and manual runs then email the result (updated, no update, or
+#   failed with the log attached) using the SMTP_PASSWORD repository secret.
 name: Update data and deploy site
 
 on:
@@ -40,7 +42,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          uv run python scripts/build_data.py
+          set -o pipefail
+          uv run python scripts/build_data.py 2>&1 | tee -a run.log
           if git diff --quiet -- docs/data data/source_metadata.json; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
@@ -48,7 +51,9 @@ jobs:
           fi
 
       - name: Test
-        run: uv run pytest -q
+        run: |
+          set -o pipefail
+          uv run pytest -q 2>&1 | tee -a run.log
 
       - name: Commit updated data
         if: steps.data.outputs.changed == 'true'
@@ -65,6 +70,14 @@ jobs:
         with:
           path: docs
 
+      - name: Keep the log for the email
+        if: always() && github.event_name != 'push'
+        uses: actions/upload-artifact@v7
+        with:
+          name: run-log
+          path: run.log
+          if-no-files-found: ignore
+
   deploy:
     needs: build
     # Scheduled runs deploy only when the data changed
@@ -76,3 +89,36 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v5
+
+  notify:
+    # Email the result of scheduled and manual refreshes (not pushes)
+    needs: [build, deploy]
+    if: always() && github.event_name != 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: run-log
+
+      - name: Email the result
+        env:
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          BUILD: ${{ needs.build.result }}
+          DEPLOY: ${{ needs.deploy.result }}
+          CHANGED: ${{ needs.build.outputs.changed }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          data=$(grep -h "^Wrote docs" run.log 2>/dev/null | tail -1 || true)
+          if [ "$BUILD" = success ] && { [ "$DEPLOY" = success ] || [ "$DEPLOY" = skipped ]; }; then
+            if [ "$CHANGED" = true ]; then result="updated with new RTCI data"; else result="no update"; fi
+            body=$(printf 'The weekly SynthRTCI refresh finished: %s.\n\n%s\nSite: https://apwheele.github.io/SynthRTCI/\nRun: %s\n' \
+              "$result" "$data" "$RUN_URL")
+            python3 scripts/send_mail.py --subject "SynthRTCI weekly refresh: $result" --body "$body"
+          else
+            body=$(printf 'The weekly SynthRTCI refresh failed (build: %s, deploy: %s).\n\nRun: %s\nThe log of the refresh and test steps is attached.\n' \
+              "$BUILD" "$DEPLOY" "$RUN_URL")
+            python3 scripts/send_mail.py --subject "SynthRTCI weekly refresh FAILED" --body "$body" --attach run.log
+          fi
