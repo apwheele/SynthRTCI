@@ -1,10 +1,11 @@
 """Refresh the Real-Time Crime Index snapshot and build the website data file.
 
 Follows the update approach in https://github.com/apwheele/CrimeDecomp
-(src/sync_latest_data.R): ask the GitHub API for the current
-Crime_Index_Reported_Crime_Trends_*.csv on the main branch of
-https://github.com/AH-Datalytics/rtci, and download it (and the agency
-file used for city names) only when its Git blob revision has changed.
+(src/sync_latest_data.R): find the newest monthly crime sample linked from
+https://crimeindex.org/download (the RTCI moved there from GitHub after the
+June 2026 sample), and download it only when its S3 ETag has changed. The
+agency file used for city names still comes from the main branch of
+https://github.com/AH-Datalytics/rtci, checked by its Git blob revision.
 
     uv run python scripts/build_data.py            # check upstream, rebuild
     uv run python scripts/build_data.py --offline  # rebuild from data/raw only
@@ -21,6 +22,7 @@ import os
 import argparse
 import hashlib
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,8 +36,12 @@ RAW = ROOT / "data" / "raw"
 META = ROOT / "data" / "source_metadata.json"
 OUT = ROOT / "docs" / "data" / "rtci.json"
 
+CRIME_INDEX_PAGE = "https://crimeindex.org/download"
+CRIME_SAMPLE_LINK = re.compile(
+    r"https://crimeindex-data\.s3[.a-z0-9-]*amazonaws\.com/downloads/archive/crime_(\d{6})(?:_\d+)?\.csv")
 REPO = "AH-Datalytics/rtci"
 REF = "main"
+USER_AGENT = "SynthRTCI data updater"
 BASE_CRIMES = ["murder", "rape", "robbery", "assault", "burglary", "theft", "motor"]
 
 # Two agencies in the crime file have no row in pre_processed.csv; same
@@ -48,12 +54,36 @@ NAME_OVERRIDES = {
 
 def github_contents(path):
     url = f"https://api.github.com/repos/{REPO}/contents/{path}?ref={REF}"
-    headers = {"User-Agent": "SynthRTCI data updater", "Accept": "application/vnd.github+json"}
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"}
     if os.environ.get("GITHUB_TOKEN"):
         headers["Authorization"] = f"Bearer {os.environ['GITHUB_TOKEN']}"
     req = Request(url, headers=headers)
     with urlopen(req) as r:
-        return json.load(r)
+        f = json.load(r)
+    return {"name": f["name"], "path": f["path"], "revision": f["sha"], "download_url": f["download_url"]}
+
+
+def crime_index_latest():
+    """Newest monthly crime sample linked from the Crime Index download page.
+
+    Its revision is the S3 ETag, which changes whenever the file is replaced.
+    """
+    with urlopen(Request(CRIME_INDEX_PAGE, headers={"User-Agent": USER_AGENT})) as r:
+        html = r.read().decode("utf-8", errors="replace")
+    links = {m.group(0): m.group(1) for m in CRIME_SAMPLE_LINK.finditer(html)}
+    if not links:
+        sys.exit(f"No monthly crime sample links found on {CRIME_INDEX_PAGE}")
+    month = max(links.values())
+    latest = [u for u, m in links.items() if m == month]
+    if len(latest) != 1:
+        sys.exit(f"Expected one crime sample for {month} on {CRIME_INDEX_PAGE}, found {len(latest)}")
+    url = latest[0]
+    with urlopen(Request(url, method="HEAD", headers={"User-Agent": USER_AGENT})) as r:
+        etag = r.headers.get("ETag")
+    if not etag:
+        sys.exit(f"No ETag returned for {url}")
+    return {"name": url.rsplit("/", 1)[1], "path": url.split("/", 3)[3],
+            "revision": etag.strip('"'), "download_url": url}
 
 
 def md5(path):
@@ -65,15 +95,17 @@ def md5(path):
 
 
 def sync(remote, dest, prior):
-    """Download ``remote`` to ``dest`` unless the blob revision is unchanged.
+    """Download ``remote`` to ``dest`` unless the upstream revision is unchanged.
 
     Changed means different content from the file recorded in ``prior``, so a
     fresh checkout (no data/raw) that downloads the same file is unchanged.
     """
-    if not (prior and prior.get("blob_sha") == remote["sha"] and dest.exists()):
+    # blob_sha is the field name used before the crime file moved off GitHub
+    prior_rev = prior and prior.get("revision", prior.get("blob_sha"))
+    if not (prior_rev == remote["revision"] and dest.exists()):
         print(f"Downloading {remote['download_url']}")
         tmp = dest.with_suffix(dest.suffix + ".tmp")
-        req = Request(remote["download_url"], headers={"User-Agent": "SynthRTCI data updater"})
+        req = Request(remote["download_url"], headers={"User-Agent": USER_AGENT})
         with urlopen(req) as r, open(tmp, "wb") as f:
             while chunk := r.read(1 << 20):
                 f.write(chunk)
@@ -81,7 +113,7 @@ def sync(remote, dest, prior):
     new = md5(dest)
     changed = not prior or prior.get("md5") != new or prior.get("name") != remote["name"]
     print(f"{'Changed' if changed else 'Unchanged'}: {remote['path']}")
-    return {"name": remote["name"], "repository_path": remote["path"], "blob_sha": remote["sha"],
+    return {"name": remote["name"], "path": remote["path"], "revision": remote["revision"],
             "source_url": remote["download_url"], "md5": new}, changed
 
 
@@ -89,12 +121,8 @@ def refresh():
     RAW.mkdir(parents=True, exist_ok=True)
     prior = json.loads(META.read_text()) if META.exists() else {}
     files = prior.get("files", {})
-    listing = github_contents("data")
-    crime = [f for f in listing if f["type"] == "file"
-             and f["name"].startswith("Crime_Index_Reported_Crime_Trends_") and f["name"].endswith(".csv")]
-    if len(crime) != 1:
-        sys.exit(f"Expected one current Crime Index CSV upstream, found {len(crime)}")
-    remotes = {"crime_data": crime[0], "agency_source": github_contents("data/deprecated/pre_processed.csv")}
+    remotes = {"crime_data": crime_index_latest(),
+               "agency_source": github_contents("data/deprecated/pre_processed.csv")}
     dests = {"crime_data": RAW / "rtci_crime_trends.csv", "agency_source": RAW / "rtci_pre_processed.csv"}
     out, any_changed = {}, False
     for k in remotes:
@@ -102,7 +130,7 @@ def refresh():
         any_changed |= changed
     if any_changed or not prior:
         meta = {
-            "source_repository": f"https://github.com/{REPO}",
+            "sources": {"crime_data": CRIME_INDEX_PAGE, "agency_source": f"https://github.com/{REPO}"},
             "source_ref": REF,
             "downloaded_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             "files": out,
@@ -159,9 +187,9 @@ def build():
     crime_file = meta.get("files", {}).get("crime_data", {})
     data = {
         "source": {
-            "repository": meta.get("source_repository", f"https://github.com/{REPO}"),
+            "url": meta.get("sources", {}).get("crime_data", CRIME_INDEX_PAGE),
             "file": crime_file.get("name", ""),
-            "blob_sha": crime_file.get("blob_sha", ""),
+            "revision": crime_file.get("revision", ""),
             "downloaded_at_utc": meta.get("downloaded_at_utc", ""),
         },
         "dates": dates,

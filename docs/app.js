@@ -3,7 +3,7 @@
 
 "use strict";
 
-const APP_VERSION = "2026-09-21f";
+const APP_VERSION = "2026-10-16a";
 
 const CRIMES = [
   ["violent", "Violent crime"], ["murder", "Murder"], ["rape", "Rape"], ["robbery", "Robbery"],
@@ -824,8 +824,8 @@ function renderSettings(res) {
       (res.dropped.small ? ` (${res.dropped.small} smaller cities not used)` : "")],
     ["Left out of the donor pool", list(res.dropped.excluded)],
     ["Not used: missing months in the window", list(res.dropped.missing)],
-    ["Data", `Real-Time Crime Index (github.com/AH-Datalytics/rtci), ${src.file || "snapshot"}` +
-      (src.blob_sha ? `, Git blob ${src.blob_sha.slice(0, 10)}` : "") +
+    ["Data", `Crime Index, formerly Real-Time Crime Index (crimeindex.org), ${src.file || "snapshot"}` +
+      (src.revision ? `, revision ${src.revision.slice(0, 10)}` : "") +
       `, downloaded ${(src.downloaded_at_utc || "").slice(0, 10)}, months ${monthLabel(state.data.dates[0])} to ` +
       `${monthLabel(state.data.dates.at(-1))}`],
     ["Software", `${state.runtime}; estimators and intervals from SynthPower (github.com/apwheele/SynthPower)`],

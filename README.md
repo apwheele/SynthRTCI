@@ -3,7 +3,7 @@
 **Website: <https://apwheele.github.io/SynthRTCI/>**
 
 A website that runs a synthetic control analysis for a city in the
-[Real-Time Crime Index](https://realtimecrimeindex.com/) (RTCI): pick a city,
+[Real-Time Crime Index](https://crimeindex.org/) (RTCI, now the Crime Index): pick a city,
 a crime, and the date an intervention started, and it estimates how the city's
 monthly crime rate changed compared to a synthetic control built from the
 other cities. Everything runs in the browser, in Python via
@@ -25,8 +25,9 @@ Suggested citation:
 
 ## What the site does
 
-- **Treated city and outcome**: any of the 590 agencies in the RTCI national
-  sample; violent crime, murder, rape, robbery, aggravated assault, property
+- **Treated city and outcome**: any agency in the current RTCI national
+  sample (547 in the August 2026 sample; agencies whose latest month is late
+  drop out of that month's sample); violent crime, murder, rape, robbery, aggravated assault, property
   crime, burglary, theft, or motor vehicle theft. Models are fit to monthly
   rates per 100,000 residents.
 - **Intervention**: a start date, and whether the month it starts in counts
@@ -72,11 +73,14 @@ The page starts empty. Two buttons fill in every setting for an example
   November 2024, leaving out San Francisco, Chicago, Philadelphia, New York
   City and the LA County Sheriff, as in SynthPower. It uses the jackknife
   intervals, since 47 pre-period months are too few for rolling-origin bands
-  over 48 post-period months. The estimate, +895 thefts per 100,000 (+16.4%),
-  is close to SynthPower's +911 (+16.7%) but not identical: the site uses the
-  population in the RTCI crime file (as CrimeDecomp does), and keeps two
-  agencies (Hoover, AL and Pontiac, MI) that SynthPower dropped for lacking
-  names in the RTCI agency file.
+  over 48 post-period months. The estimate depends on the data version:
+  +895 thefts per 100,000 (+16.4%) with the June 2026 sample and +780
+  (+14.0%) with August 2026, against SynthPower's +911 (+16.7%). They differ
+  because the site uses the population in the RTCI crime file (as CrimeDecomp
+  does), keeps agencies that SynthPower dropped for lacking names in the RTCI
+  agency file (Pontiac, MI, and Hoover, AL when it is in the sample), and uses
+  the current RTCI sample, whose donor pool and past months change with each
+  update.
 
 ## Running it locally
 
@@ -116,12 +120,13 @@ git push
 
 `scripts/build_data.py` follows the update approach in
 [CrimeDecomp](https://github.com/apwheele/CrimeDecomp)
-(`src/sync_latest_data.R`): it asks the GitHub API for the current
-`Crime_Index_Reported_Crime_Trends_*.csv` in
-[AH-Datalytics/rtci](https://github.com/AH-Datalytics/rtci), downloads it and
-the agency file used for city names when their Git revisions differ from the
-ones recorded in `data/source_metadata.json`, and rebuilds
-`docs/data/rtci.json`. Its output only changes when the upstream files do.
+(`src/sync_latest_data.R`): it finds the newest monthly crime sample linked
+from the [Crime Index download page](https://crimeindex.org/download) (the
+RTCI moved there from GitHub after the June 2026 sample) and the agency file
+used for city names in
+[AH-Datalytics/rtci](https://github.com/AH-Datalytics/rtci), downloads them
+when their upstream revisions (S3 ETag, Git blob SHA) differ from the ones
+recorded in `data/source_metadata.json`, and rebuilds `docs/data/rtci.json`. Its output only changes when the upstream files do.
 Raw downloads go to `data/raw/` (not committed). Use `--offline` to rebuild
 from the raw files without checking upstream.
 

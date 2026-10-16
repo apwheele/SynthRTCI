@@ -2,9 +2,10 @@
 #
 # - A push to main runs the tests and deploys the site as committed.
 # - Every Monday (and on a manual "Run workflow"), scripts/build_data.py checks
-#   the RTCI repository. If the data changed and the tests still pass, the new
-#   data are committed to main and the site is redeployed. If nothing changed,
-#   the scheduled run stops without committing or deploying.
+#   the Crime Index (formerly RTCI) download page. If the data changed and the
+#   tests still pass, the new data are committed to main and the site is
+#   redeployed. If nothing changed, the scheduled run stops without committing
+#   or deploying.
 name: Update data and deploy site
 
 on:

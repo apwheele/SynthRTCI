@@ -207,14 +207,17 @@ def test_la_gascon_example(panel):
 
     Not identical: the site uses the population in the RTCI crime file (as
     CrimeDecomp does) and keeps Hoover, AL and Pontiac, MI, which SynthPower
-    dropped for lacking names in the RTCI agency file.
+    dropped for lacking names in the RTCI agency file. Each data update also
+    changes the donor pool (agencies whose latest month is late leave the RTCI
+    sample) and revises past months: +895 (16.4%) with the June 2026 sample,
+    +780 (14.0%) with August 2026.
     """
     out = A.run(panel, EXAMPLES["la_gascon"]["config"])
     assert (out["T0"], out["H"], out["first_post"]) == (47, 48, "2020-12")
-    # Loose enough for RTCI revisions to past months after a data update
-    assert 550 <= out["fit"]["n_donors"] <= 610
-    assert out["summary"]["cum"] == pytest.approx(911, rel=0.1)
-    assert out["summary"]["pct"] == pytest.approx(16.7, abs=2)
+    # Loose enough for those data updates
+    assert 480 <= out["fit"]["n_donors"] <= 610
+    assert out["summary"]["cum"] == pytest.approx(911, rel=0.25)
+    assert out["summary"]["pct"] == pytest.approx(16.7, abs=4)
     assert out["summary"]["excludes_zero"]
 
 
@@ -241,8 +244,9 @@ def test_methods_match_synthpower(panel, synthpower):
     np.testing.assert_array_equal(f_ours(X[:T0], y[:T0]).w, f_sp(X[:T0], y[:T0]).w)
     r = m.jackknife(f_ours, X[:T0], y[:T0])
     np.testing.assert_allclose(r, sp.jackknife(f_sp, X[:T0], y[:T0]))
-    E = m.rolling_origin_errors(f_ours, X[:T0], y[:T0], 9, 36)
-    np.testing.assert_allclose(E, sp.rolling_origin_errors(f_sp, X[:T0], y[:T0], 9, 36))
+    H = len(y) - T0
+    E = m.rolling_origin_errors(f_ours, X[:T0], y[:T0], H, 36)
+    np.testing.assert_allclose(E, sp.rolling_origin_errors(f_sp, X[:T0], y[:T0], H, 36))
     dif = y[T0:] - f_ours(X[:T0], y[:T0]).predict(X[T0:])
     for ours, theirs in [(m.cum_band_iid(dif, r, 0.05, 1000, 10), sp.cum_band_iid(dif, r, 0.05, 1000, 10)),
                          (m.cum_band_block(dif, r), sp.cum_band_block(dif, r)),
