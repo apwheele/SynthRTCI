@@ -3,7 +3,7 @@
 
 "use strict";
 
-const APP_VERSION = "2026-10-16a";
+const APP_VERSION = "2026-10-16b";
 
 const CRIMES = [
   ["violent", "Violent crime"], ["murder", "Murder"], ["rape", "Rape"], ["robbery", "Robbery"],
@@ -270,7 +270,7 @@ function renderChips() {
     const c = state.byId.get(id);
     const li = document.createElement("li");
     const name = document.createElement("span");
-    name.textContent = c ? c.label : id;
+    name.textContent = c ? c.label : `${id} (not in the current data)`;
     const b = document.createElement("button");
     b.type = "button";
     b.textContent = "×";
@@ -1003,11 +1003,16 @@ function startOver() {
   if (state.ready) setStatus(READY_MSG, false);
 }
 
+// Agencies leave the RTCI sample in months when their latest data are late
+const exampleMissing = (key) => !state.byId.has(state.examples[key].config.city);
+
 function exampleButton(key) {
   const b = document.createElement("button");
   b.type = "button";
   b.className = "btn";
   b.textContent = state.examples[key].button;
+  b.disabled = exampleMissing(key);
+  if (b.disabled) b.title = "Not available: the city is not in the current RTCI sample";
   b.addEventListener("click", () => loadExample(key));
   return b;
 }
@@ -1019,7 +1024,8 @@ function populateExamples() {
   $("example-list").replaceChildren(...keys.map((k) => {
     const li = document.createElement("li");
     const p = document.createElement("p");
-    p.textContent = state.examples[k].description;
+    p.textContent = state.examples[k].description + (exampleMissing(k)
+      ? " (Not available with the current data: the city is not in this month's RTCI sample.)" : "");
     li.append(exampleButton(k), p);
     return li;
   }));

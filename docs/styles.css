@@ -162,6 +162,7 @@ input:focus-visible, select:focus-visible, button:focus-visible, .seg input:focu
 .btn:hover { border-color: var(--ink-2); }
 .btn.primary { background: var(--series-1); border-color: var(--series-1); color: #fff; font-weight: 600; width: 100%; padding: 9px; font-size: 0.95rem; }
 .btn.primary:disabled { opacity: 0.55; cursor: progress; }
+.btn:disabled:not(.primary) { opacity: 0.5; cursor: not-allowed; border-color: var(--border); }
 .btn-row { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
 .btn-row .btn { flex: 1 1 auto; }
 .actions { padding-top: 14px; }

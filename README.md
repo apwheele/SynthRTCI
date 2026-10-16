@@ -122,13 +122,29 @@ git push
 [CrimeDecomp](https://github.com/apwheele/CrimeDecomp)
 (`src/sync_latest_data.R`): it finds the newest monthly crime sample linked
 from the [Crime Index download page](https://crimeindex.org/download) (the
-RTCI moved there from GitHub after the June 2026 sample) and the agency file
+RTCI moved there from GitHub after the June 2026 sample), the agency file
 used for city names in
-[AH-Datalytics/rtci](https://github.com/AH-Datalytics/rtci), downloads them
-when their upstream revisions (S3 ETag, Git blob SHA) differ from the ones
-recorded in `data/source_metadata.json`, and rebuilds `docs/data/rtci.json`. Its output only changes when the upstream files do.
-Raw downloads go to `data/raw/` (not committed). Use `--offline` to rebuild
-from the raw files without checking upstream.
+[AH-Datalytics/rtci](https://github.com/AH-Datalytics/rtci) (no longer
+updated), and FBI agency names from
+[AH-Datalytics/cde-population](https://github.com/AH-Datalytics/cde-population)
+for agencies that joined the sample since. It downloads them when their
+upstream revisions (S3 ETag, Git blob SHA) differ from the ones recorded in
+`data/source_metadata.json`, and rebuilds `docs/data/rtci.json`. Its output
+only changes when the upstream files do. Raw downloads go to `data/raw/` (not
+committed). Use `--offline` to rebuild from the raw files without checking
+upstream.
+
+Each RTCI sample is the full history from January 2017, revised, so a new one
+replaces the old. The script only uses it if it starts no later and ends no
+earlier than the current site data; otherwise it stops (and the scheduled
+workflow fails) without changing anything. The site uses the agencies in the
+current sample (`sample == 1`), which changes every month: agencies whose
+latest month is late drop out until they catch up, and new agencies join
+(between 445 and 590 agencies per sample from August 2025 to August 2026).
+An example whose city is not in the current sample is shown as unavailable,
+and left-out cities that are not in the data are ignored. The tests do not
+depend on particular agencies; `RTCI_DATA=path/to/rtci.json uv run pytest`
+runs them against another data file.
 
 Results for the same settings can change after a data update (new months, and
 RTCI revisions to past months), which is why the printed report records the
