@@ -4,14 +4,14 @@
     "agency_source": "https://github.com/AH-Datalytics/rtci/tree/main",
     "agency_names": "https://github.com/AH-Datalytics/cde-population/tree/master"
   },
-  "downloaded_at_utc": "2026-10-16 13:15:27",
+  "downloaded_at_utc": "2026-10-26 15:04:49",
   "files": {
     "crime_data": {
-      "name": "crime_202608_1792092221.csv",
-      "path": "downloads/archive/crime_202608_1792092221.csv",
-      "revision": "81c6a16c259f4404b7e896236b75864d-2",
-      "source_url": "https://crimeindex-data.s3.us-east-1.amazonaws.com/downloads/archive/crime_202608_1792092221.csv",
-      "md5": "8f53c7d4277ca1ef21d5b42818998b51"
+      "name": "crime_202608_1792178186.csv",
+      "path": "downloads/archive/crime_202608_1792178186.csv",
+      "revision": "45f303c56491ccc60bb77bcbad3835e4-2",
+      "source_url": "https://crimeindex-data.s3.us-east-1.amazonaws.com/downloads/archive/crime_202608_1792178186.csv",
+      "md5": "54e249cce232ff68596d72a6fa99acc4"
     },
     "agency_source": {
       "name": "pre_processed.csv",
